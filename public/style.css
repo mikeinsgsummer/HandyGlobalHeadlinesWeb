@@ -478,6 +478,14 @@ footer {
     background: var(--border-color);
 }
 
+#font-decrease,
+#font-increase,
+#font-decrease-main,
+#font-increase-main {
+    color: #60a5fa; /* Light Blue */
+    font-weight: 700;
+}
+
 .text-btn {
     background: var(--primary);
     color: white;
