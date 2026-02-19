@@ -63,6 +63,15 @@ const COUNTRY_LANGUAGES = {
 
 const COUNTRY_NAMES = {}; // Map code -> name for Bing search
 
+// Reader and Offline variables
+let currentArticle = null;
+let readerFontSize = parseInt(localStorage.getItem('readerFontSize')) || 18;
+let readerDarkMode = localStorage.getItem('readerDarkMode') === 'true';
+let isReaderMode = true;
+let savedArticles = JSON.parse(localStorage.getItem('savedArticles')) || [];
+let bookmarkedArticles = JSON.parse(localStorage.getItem('bookmarkedArticles')) || [];
+let preferredSource = localStorage.getItem('preferredSource') || 'google';
+let openInExternalSafari = localStorage.getItem('openInExternalSafari') === 'true';
 // Initialize
 async function init() {
     await fetchCountries();
@@ -74,17 +83,562 @@ async function init() {
     });
     languageSelect.addEventListener('change', refreshNews);
 
-    // Setup manual source selector
-    const sourceDropdown = document.getElementById('source-dropdown');
-    if (sourceDropdown) {
-        sourceDropdown.addEventListener('change', () => {
-            const country = countrySelect.value;
-            const lang = languageSelect.value;
-            const source = sourceDropdown.value;
-            if (country) fetchNews(country, lang, source);
+    setupReaderHandlers();
+    setupSettingsHandlers();
+
+    // Setup Main Screen Controls
+    const mainFontIncr = document.getElementById('font-increase-main');
+    const mainFontDecr = document.getElementById('font-decrease-main');
+    const mainDarkToggle = document.getElementById('toggle-dark-mode-main');
+
+    if (mainFontIncr) mainFontIncr.onclick = () => updateFontSize(2);
+    if (mainFontDecr) mainFontDecr.onclick = () => updateFontSize(-2);
+    if (mainDarkToggle) mainDarkToggle.onclick = toggleDarkMode;
+
+    // Apply saved preferences
+    applyFontSize();
+    updateTheme();
+}
+
+function setupReaderHandlers() {
+    const overlay = document.getElementById('reader-overlay');
+    const closeBtn = document.getElementById('close-reader');
+    const fontIncr = document.getElementById('font-increase');
+    const fontDecr = document.getElementById('font-decrease');
+    const darkToggle = document.getElementById('toggle-dark-mode');
+    const modeSwitch = document.getElementById('reader-mode-switch');
+    const saveBtn = document.getElementById('save-offline');
+    const savedListBtn = document.getElementById('saved-articles-btn');
+    const readerLangSelect = document.getElementById('reader-language-select');
+
+    if (closeBtn) closeBtn.onclick = () => overlay.classList.add('hidden');
+    if (overlay) overlay.onclick = (e) => { if (e.target === overlay) overlay.classList.add('hidden'); };
+
+    if (fontIncr) fontIncr.onclick = () => updateFontSize(2);
+    if (fontDecr) fontDecr.onclick = () => updateFontSize(-2);
+    if (darkToggle) darkToggle.onclick = toggleDarkMode;
+
+    if (modeSwitch) {
+        modeSwitch.querySelectorAll('.switch-opt').forEach(opt => {
+            opt.onclick = () => {
+                const mode = opt.getAttribute('data-mode');
+                setReaderMode(mode === 'reader');
+            };
         });
     }
+
+    if (saveBtn) saveBtn.onclick = saveCurrentArticle;
+    if (savedListBtn) savedListBtn.onclick = showSavedArticles;
+
+    const bookmarkListBtn = document.getElementById('bookmark-list-btn');
+    if (bookmarkListBtn) {
+        bookmarkListBtn.onclick = showBookmarks;
+    }
+
+    if (readerLangSelect) {
+        readerLangSelect.onchange = () => {
+            if (currentArticle) openArticle(currentArticle);
+        };
+    }
 }
+
+function updateTheme() {
+    if (readerDarkMode) {
+        document.body.classList.add('global-dark');
+    } else {
+        document.body.classList.remove('global-dark');
+    }
+    updateReaderTheme();
+}
+
+function updateFontSize(delta) {
+    readerFontSize = Math.min(Math.max(12, readerFontSize + delta), 32);
+    localStorage.setItem('readerFontSize', readerFontSize);
+    applyFontSize();
+}
+
+function applyFontSize() {
+    const content = document.getElementById('reader-content');
+    if (content) content.style.fontSize = `${readerFontSize}px`;
+
+    // Also apply to home screen headlines (mapped from readerFontSize)
+    // Default readerFontSize 18px maps to default headline size ~20px (1.25rem)
+    const headlineSize = readerFontSize + 2;
+    document.documentElement.style.setProperty('--headline-font-size', `${headlineSize}px`);
+
+    // Grey out/Disable buttons at limits (12px min, 32px max)
+    const decrButtons = ['font-decrease', 'font-decrease-main'];
+    const incrButtons = ['font-increase', 'font-increase-main'];
+
+    decrButtons.forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) btn.disabled = (readerFontSize <= 12);
+    });
+
+    incrButtons.forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) btn.disabled = (readerFontSize >= 32);
+    });
+}
+
+function toggleDarkMode() {
+    readerDarkMode = !readerDarkMode;
+    localStorage.setItem('readerDarkMode', readerDarkMode);
+    updateTheme();
+}
+
+function updateReaderTheme() {
+    const overlay = document.getElementById('reader-overlay');
+    if (readerDarkMode) {
+        overlay.classList.add('reader-dark');
+    } else {
+        overlay.classList.remove('reader-dark');
+    }
+}
+
+function toggleReaderMode() {
+    setReaderMode(!isReaderMode);
+}
+
+function setReaderMode(reader) {
+    isReaderMode = reader;
+    const switchOpts = document.querySelectorAll('#reader-mode-switch .switch-opt');
+    switchOpts.forEach(opt => {
+        if (opt.getAttribute('data-mode') === (isReaderMode ? 'reader' : 'original')) {
+            opt.classList.add('active');
+        } else {
+            opt.classList.remove('active');
+        }
+    });
+
+    // Requirement 2: Hide translation select and Save icon in Original mode
+    const readerLangSelect = document.getElementById('reader-language-select');
+    const saveOfflineBtn = document.getElementById('save-offline');
+
+    if (readerLangSelect) {
+        if (isReaderMode) {
+            readerLangSelect.classList.remove('hidden');
+        } else {
+            readerLangSelect.classList.add('hidden');
+        }
+    }
+
+    if (saveOfflineBtn) {
+        if (isReaderMode) {
+            saveOfflineBtn.classList.remove('hidden');
+        } else {
+            saveOfflineBtn.classList.add('hidden');
+        }
+    }
+
+    openArticle(currentArticle);
+}
+
+async function openArticle(article, forceOriginal = false) {
+    currentArticle = article;
+    const overlay = document.getElementById('reader-overlay');
+    const content = document.getElementById('reader-content');
+    const readerLangSelect = document.getElementById('reader-language-select');
+
+    // Reset state when opening a NEW article
+    if (overlay.classList.contains('hidden')) {
+        if (readerLangSelect) readerLangSelect.value = 'original';
+        isReaderMode = true; // Default
+    }
+
+    if (forceOriginal) {
+        isReaderMode = false;
+    }
+
+    // Refresh UI toggle state
+    const switchOpts = document.querySelectorAll('#reader-mode-switch .switch-opt');
+    switchOpts.forEach(opt => {
+        const mode = opt.getAttribute('data-mode');
+        if ((mode === 'reader' && isReaderMode) || (mode === 'original' && !isReaderMode)) {
+            opt.classList.add('active');
+        } else {
+            opt.classList.remove('active');
+        }
+    });
+
+    const targetLang = readerLangSelect ? readerLangSelect.value : 'original';
+
+    // Update external link
+    const externalBtn = document.getElementById('open-external');
+    if (externalBtn) externalBtn.href = article.link;
+
+    overlay.classList.remove('hidden');
+
+    const modeSwitch = document.getElementById('reader-mode-switch');
+
+    // For saved articles, we always use Reader Mode and hide the switch
+    // Check for .content (standard for saved) or .savedAt (extra safety)
+    const saveBtn = document.getElementById('save-offline');
+    if (article.content || article.savedAt) {
+        if (modeSwitch) modeSwitch.style.display = 'none';
+        if (saveBtn) saveBtn.classList.add('hidden');
+        if (!isReaderMode) {
+            setReaderMode(true);
+            return;
+        }
+    } else {
+        if (modeSwitch) modeSwitch.style.display = 'flex';
+        // Note: visibility for non-saved articles is handled by setReaderMode(isReaderMode)
+    }
+
+    content.innerHTML = '<div class="loading-state"><h3>Optimizing for reading...</h3></div>';
+
+    if (!isReaderMode) {
+        const isNative = window.Capacitor && window.Capacitor.isNativePlatform();
+        if (isNative && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser) {
+            try {
+                await window.Capacitor.Plugins.Browser.open({ url: article.link });
+                content.innerHTML = `
+                    <div class="info-state">
+                        <h3>Original View</h3>
+                        <p>The original webpage is open in a native browser overlay.</p>
+                        <div class="error-actions">
+                            <button onclick="setReaderMode(true)" class="text-btn primary">Switch to Reader Mode</button>
+                        </div>
+                    </div>
+                `;
+                return;
+            } catch (e) {
+                console.error("Native Browser Error:", e);
+            }
+        }
+
+        try {
+            const html = await fetchArticleHTML(article.link);
+            content.innerHTML = `
+                <div class="iframe-container">
+                    <iframe class="reader-iframe" id="reader-frame"></iframe>
+                </div>
+            `;
+            const frame = document.getElementById('reader-frame');
+            if (frame) {
+                frame.srcdoc = `
+                    <html>
+                        <head>
+                            <base href="${article.link}">
+                            <meta charset="utf-8">
+                            <style>
+                                body { margin: 0; font-family: -apple-system, system-ui, sans-serif; }
+                                img { max-width: 100%; height: auto; }
+                            </style>
+                        </head>
+                        <body>${html}</body>
+                    </html>
+                `;
+            }
+        } catch (error) {
+            console.error("Iframe Load Error:", error);
+            content.innerHTML = `
+                <div class="error-state">
+                    <p>Contents pending to be loaded.</p>
+                    <p><strong>Access it in Web is advised</strong></p>
+                    <div class="error-actions">
+                        <a href="${article.link}" target="_blank" class="text-btn primary">Open in Browser</a>
+                    </div>
+                </div>
+            `;
+        }
+        return;
+    }
+
+    // Use saved content if available (Offline/Saved Mode)
+    if (article.content) {
+        let displayContent = article.content;
+        let displayTitle = article.title;
+
+        if (targetLang !== 'original') {
+            content.innerHTML = '<div class="loading-state"><h3>Translating saved article...</h3></div>';
+            displayTitle = await translateText(article.title, targetLang);
+            displayContent = await translateHTML(article.content, targetLang);
+        }
+
+        content.innerHTML = `<h1>${displayTitle}</h1><div class="article-body">${displayContent}</div>`;
+        applyFontSize();
+        setupHighlighting();
+        return;
+    }
+
+    try {
+        const html = await fetchArticleHTML(article.link);
+
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        // Fix relative URLs in the extracted doc before Readability
+        const base = doc.createElement('base');
+        base.href = article.link;
+        doc.head.append(base);
+
+        const reader = new Readability(doc);
+        const articleData = reader.parse();
+
+        if (articleData && articleData.content) {
+            let displayTitle = articleData.title || article.title;
+            let displayContent = articleData.content;
+
+            if (targetLang !== 'original') {
+                content.innerHTML = '<div class="loading-state"><h3>Translating...</h3></div>';
+                displayTitle = await translateText(displayTitle, targetLang);
+                displayContent = await translateHTML(displayContent, targetLang);
+            }
+
+            content.innerHTML = `
+                <h1>${displayTitle}</h1>
+                <div class="article-meta">Published: ${new Date(article.pubDate).toLocaleDateString()}</div>
+                <div class="article-body">${displayContent}</div>
+            `;
+            applyFontSize();
+            setupHighlighting();
+
+            // Restore highlights if available
+            const saved = savedArticles.find(a => a.link === article.link);
+            if (saved && saved.highlights) {
+                applyHighlights(saved.highlights);
+            }
+        } else {
+            throw new Error("Could not parse article");
+        }
+    } catch (error) {
+        console.error("Reader Error:", error);
+        content.innerHTML = `
+        <div class="info-state">
+            <p>Contents loading delayed.</p>
+            <p><strong>Jumping to Original view...</strong></p>
+        </div>
+        `;
+
+        const failureLink = article.link;
+        setTimeout(() => {
+            // Only switch if we are still on the same article and still in reader mode
+            if (currentArticle && currentArticle.link === failureLink && isReaderMode) {
+                setReaderMode(false);
+            }
+        }, 1000);
+    }
+}
+
+function setupHighlighting() {
+    const content = document.getElementById('reader-content');
+    content.onmouseup = () => {
+        const selection = window.getSelection();
+        if (selection.toString().length > 0) {
+            const range = selection.getRangeAt(0);
+            const mark = document.createElement('mark');
+            mark.className = 'news-highlight';
+            range.surroundContents(mark);
+            saveHighlights();
+            selection.removeAllRanges();
+        }
+    };
+}
+
+function saveHighlights() {
+    if (!currentArticle) return;
+    const content = document.getElementById('reader-content');
+    const highlights = content.innerHTML;
+    // In a real app, we'd store ranges, but for simplicity we'll store the modified innerHTML if saved for offline
+}
+
+async function saveCurrentArticle() {
+    if (!currentArticle) return;
+
+    let contentToSave = '';
+
+    // If we have content in the UI (Reader Mode active)
+    const body = document.querySelector('.article-body');
+    if (body) {
+        contentToSave = body.innerHTML;
+    } else if (currentArticle.content) {
+        // If it was already saved/pre-fetched
+        contentToSave = currentArticle.content;
+    } else {
+        // We are in Original view and haven't parsed yet
+        try {
+            const saveBtn = document.getElementById('save-offline');
+            const originalText = saveBtn.textContent;
+            saveBtn.textContent = '...'; // Quick feedback
+
+            const html = await fetchArticleHTML(currentArticle.link);
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const reader = new Readability(doc);
+            const parsed = reader.parse();
+
+            if (parsed && parsed.content) {
+                contentToSave = parsed.content;
+            } else {
+                throw new Error("Could not parse article for saving");
+            }
+            saveBtn.textContent = originalText;
+        } catch (error) {
+            console.error("Save Error:", error);
+            alert("Could not extract content for offline reading. Please try switch to Reader Mode first.");
+            return;
+        }
+    }
+
+    if (!contentToSave) return;
+
+    // Capture the current title from the UI (which might be translated)
+    const readerTitle = document.querySelector('.reader-body h1');
+    const titleToSave = readerTitle ? readerTitle.textContent : currentArticle.title;
+
+    const articleToSave = {
+        ...currentArticle,
+        title: titleToSave,
+        content: contentToSave,
+        savedAt: new Date().toISOString()
+    };
+
+    const existingIndex = savedArticles.findIndex(a => a.link === articleToSave.link);
+    if (existingIndex > -1) {
+        savedArticles[existingIndex] = articleToSave;
+    } else {
+        savedArticles.push(articleToSave);
+    }
+
+    localStorage.setItem('savedArticles', JSON.stringify(savedArticles));
+    alert("Article saved for offline reading!");
+}
+
+function deleteArticle(e, link) {
+    if (e) e.stopPropagation(); // Prevent opening the article
+    if (!confirm("Remove this article from your offline library?")) return;
+
+    savedArticles = savedArticles.filter(a => a.link !== link);
+    localStorage.setItem('savedArticles', JSON.stringify(savedArticles));
+    showSavedArticles(); // Re-render list
+}
+
+function deleteAllSavedArticles() {
+    if (savedArticles.length === 0) return;
+    if (!confirm("Are you sure you want to delete ALL saved articles? This cannot be undone.")) return;
+
+    savedArticles = [];
+    localStorage.setItem('savedArticles', JSON.stringify([]));
+    showSavedArticles();
+}
+
+function showSavedArticles() {
+    document.body.classList.remove('bookmarks-view-active');
+    document.body.classList.add('saved-view-active');
+    if (savedArticles.length === 0) {
+        showEmpty("You haven't saved any articles yet.");
+        // Add a back button even if empty
+        const backBanner = document.createElement('div');
+        backBanner.className = 'info-banner saved-header';
+        backBanner.innerHTML = `
+            <div class="banner-left">
+                <button onclick="refreshNews()" class="icon-btn-text">← Back to Home</button>
+            </div>
+            <div class="banner-title">Saved Articles</div>
+        `;
+        newsContainer.prepend(backBanner);
+        return;
+    }
+
+    renderNews(savedArticles.map(a => ({ ...a, source: 'Saved: ' + a.source })), true);
+
+    // Add a banner with Delete All option
+    const backBanner = document.createElement('div');
+    backBanner.className = 'info-banner saved-header';
+    backBanner.innerHTML = `
+            <div class="banner-left">
+                <button onclick="refreshNews()" class="icon-btn-text">← Back to Home</button>
+            </div>
+            <div class="banner-title">Saved Articles</div>
+            <div class="banner-right">
+                <button onclick="deleteAllSavedArticles()" class="icon-btn-text delete-all" title="Delete All">🗑️ Clear All</button>
+            </div>
+        `;
+    newsContainer.prepend(backBanner);
+}
+
+function toggleBookmark(article, event) {
+    if (event) event.stopPropagation();
+
+    const index = bookmarkedArticles.findIndex(a => a.link === article.link);
+    if (index > -1) {
+        bookmarkedArticles.splice(index, 1);
+        console.log("Removed from bookmarks");
+    } else {
+        bookmarkedArticles.push({
+            title: article.title,
+            link: article.link,
+            pubDate: article.pubDate,
+            source: article.source
+        });
+        console.log("Added to bookmarks");
+    }
+
+    localStorage.setItem('bookmarkedArticles', JSON.stringify(bookmarkedArticles));
+
+    // Update UI if we are in the bookmarks view
+    if (document.body.classList.contains('bookmarks-view-active')) {
+        showBookmarks();
+    } else {
+        // Just refresh the current list to update stars
+        const starBtn = event ? event.currentTarget : null;
+        if (starBtn && (starBtn.classList.contains('bookmark-btn') || starBtn.closest('.bookmark-btn'))) {
+            const btn = starBtn.classList.contains('bookmark-btn') ? starBtn : starBtn.closest('.bookmark-btn');
+            const isActive = btn.classList.toggle('active');
+
+            // Swap SVG content
+            btn.innerHTML = isActive ?
+                `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>` :
+                `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>`;
+        }
+    }
+}
+
+function showBookmarks() {
+    document.body.classList.remove('saved-view-active');
+    document.body.classList.add('bookmarks-view-active');
+
+    if (bookmarkedArticles.length === 0) {
+        showEmpty("You haven't bookmarked any headlines yet.");
+        const backBanner = document.createElement('div');
+        backBanner.className = 'info-banner saved-header';
+        backBanner.innerHTML = `
+            <div class="banner-left">
+                <button onclick="refreshNews()" class="icon-btn-text">← Back to Home</button>
+            </div>
+            <div class="banner-title">Bookmarks</div>
+        `;
+        newsContainer.prepend(backBanner);
+        return;
+    }
+
+    renderNews(bookmarkedArticles, false, true); // isSavedView=false, isBookmarkView=true
+
+    const backBanner = document.createElement('div');
+    backBanner.className = 'info-banner saved-header';
+    backBanner.innerHTML = `
+            <div class="banner-left">
+                <button onclick="refreshNews()" class="icon-btn-text">← Back to Home</button>
+            </div>
+            <div class="banner-title">Bookmarks <svg viewBox="0 0 24 24" fill="currentColor" style="width:1.2rem; height:1.2rem; display:inline-block; vertical-align:middle; margin-left:5px; color:#facc15;"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg></div>
+            <div class="banner-right">
+                <button onclick="clearAllBookmarks()" class="icon-btn-text delete-all" title="Clear All">🗑️ Clear All</button>
+            </div>
+        `;
+    newsContainer.prepend(backBanner);
+}
+
+function clearAllBookmarks() {
+    if (confirm("Are you sure you want to clear all bookmarks?")) {
+        bookmarkedArticles = [];
+        localStorage.setItem('bookmarkedArticles', JSON.stringify(bookmarkedArticles));
+        showBookmarks();
+    }
+}
+
+function applyHighlights(htmlContent) {
+    // If we were just storing content, this is handled by loading the saved content
+}
+
 
 function updateLanguageLabel() {
     const code = countrySelect.value;
@@ -96,6 +650,8 @@ function updateLanguageLabel() {
 }
 
 function refreshNews() {
+    document.body.classList.remove('saved-view-active');
+    document.body.classList.remove('bookmarks-view-active');
     const country = countrySelect.value;
     const lang = languageSelect.value;
     if (country) fetchNews(country, lang);
@@ -103,12 +659,33 @@ function refreshNews() {
 
 async function detectUserCountry() {
     try {
-        const response = await fetch('https://ipapi.co/json/');
+        // Primary Attempt: ipapi.co
+        const response = await fetchWithTimeout('https://ipapi.co/json/', { timeout: 3000 });
         const data = await response.json();
-        return data.country_code ? data.country_code.toLowerCase() : null;
-    } catch (error) {
-        return null;
+        if (data.country_code) return data.country_code.toLowerCase();
+    } catch (e) {
+        console.warn('Primary country detection failed, trying fallback...');
     }
+
+    try {
+        // Fallback 1: ip-api.com (HTTP only for free tier, so might fail on HTTPS sites unless proxied)
+        // Using AllOrigins as it's already used elsewhere
+        const proxyUrl = getProxyUrl('http://ip-api.com/json');
+        const response = await fetchWithTimeout(proxyUrl, { timeout: 3000 });
+        const data = await response.json();
+        const body = JSON.parse(data.contents);
+        if (body.countryCode) return body.countryCode.toLowerCase();
+    } catch (e) {
+        console.warn('Secondary country detection failed, using browser hint...');
+    }
+
+    // Fallback 2: Browser Language Hint (e.g., 'en-US' -> 'us')
+    const userLocale = navigator.language || navigator.userLanguage;
+    if (userLocale && userLocale.includes('-')) {
+        return userLocale.split('-')[1].toLowerCase();
+    }
+
+    return null;
 }
 
 async function fetchCountries() {
@@ -149,7 +726,6 @@ async function fetchCountries() {
     }
 }
 
-// Client-side translation helper
 async function translateText(text, targetLang) {
     if (!text || targetLang === 'original') return text;
     try {
@@ -163,23 +739,48 @@ async function translateText(text, targetLang) {
     }
 }
 
-// Proxy helper to handle environment-specific logic
-function getProxyUrl(targetUrl) {
-    const isNetlify = window.location.hostname.includes('netlify.app');
+/**
+ * Requirement 3: Translate whole article content while preserving tags.
+ */
+async function translateHTML(html, targetLang) {
+    if (!html || targetLang === 'original') return html;
 
-    // If on Netlify, use the local proxy function
-    if (isNetlify) {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html;
+
+    const walker = document.createTreeWalker(tempDiv, NodeFilter.SHOW_TEXT, null, false);
+    let node;
+    const textNodes = [];
+    while (node = walker.nextNode()) {
+        if (node.nodeValue.trim()) {
+            textNodes.push(node);
+        }
+    }
+
+    // Translate text nodes
+    for (const n of textNodes) {
+        n.nodeValue = await translateText(n.nodeValue, targetLang);
+    }
+
+    return tempDiv.innerHTML;
+}
+
+function getProxyUrl(targetUrl) {
+    // Check for native mobile environment (Capacitor/Cordova)
+    const isNative = window.location.protocol === 'capacitor:' || window.location.protocol === 'http:' && window.location.hostname === 'localhost' && !window.location.port;
+
+    // For local dev with Netlify CLI
+    const isNetlifyDev = window.location.hostname === 'localhost' && window.location.port === '8888';
+    if (isNetlifyDev) {
         return `/.netlify/functions/proxy?url=${encodeURIComponent(targetUrl)}`;
     }
 
-    // For GitHub Pages and local development, use AllOrigins RAW endpoint
-    // This is faster as it doesn't wrap the response in a JSON object
+    // Default to the most reliable public proxy for web/native fallback
     return `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
 }
 
-// Timeout helper
 async function fetchWithTimeout(resource, options = {}) {
-    const { timeout = 2000 } = options;
+    const { timeout = 5000 } = options;
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeout);
     try {
@@ -195,21 +796,324 @@ async function fetchWithTimeout(resource, options = {}) {
     }
 }
 
+/**
+ * Universal fetch that uses CapacitorHttp for native environments to bypass CORS/Proxies.
+ */
+async function nativeFetch(url, options = {}) {
+    const isNative = window.Capacitor && window.Capacitor.isNativePlatform();
+    const useNative = isNative && window.Capacitor.Plugins && window.Capacitor.Plugins.CapacitorHttp;
+
+    if (useNative) {
+        const mobileUA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+        console.log(`[Native] Fetching: ${url}`);
+        try {
+            const response = await window.Capacitor.Plugins.CapacitorHttp.get({
+                url: url,
+                headers: {
+                    ...options.headers,
+                    'User-Agent': mobileUA,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Upgrade-Insecure-Requests': '1'
+                },
+                connectTimeout: options.timeout || 15000,
+                readTimeout: options.timeout || 15000
+            });
+
+            if (response.status >= 200 && response.status < 300) {
+                return response.data;
+            }
+            throw new Error(`Native fetch status ${response.status}`);
+        } catch (e) {
+            console.error("Native fetch internal error:", e);
+            throw e;
+        }
+    }
+
+    // Fallback to standard fetch (for browser or if native plugin fails)
+    const res = await fetchWithTimeout(url, options);
+    if (!res.ok) throw new Error(`Status ${res.status}`);
+    return await res.text();
+}
+
+/**
+ * High-priority global sources for maximum reliability.
+ */
+const HIGH_PRIORITY_FEEDS = [
+    { name: 'Associated Press', url: 'https://apnews.com/feed', source: 'AP News' },
+    { name: 'The Guardian', url: 'https://www.theguardian.com/world/rss', source: 'The Guardian' },
+    { name: 'BBC World', url: 'https://feeds.bbci.co.uk/news/world/rss.xml', source: 'BBC News' }
+];
+
+async function fetchFromRss(feed, timeout = 5000) {
+    try {
+        const xmlText = await fetchRssRacing(feed.url, timeout);
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+        const items = Array.from(xmlDoc.querySelectorAll("item")).slice(0, 10);
+
+        return items.map(item => ({
+            title: item.querySelector("title").textContent.trim(),
+            link: item.querySelector("link").textContent,
+            pubDate: item.querySelector("pubDate") ? item.querySelector("pubDate").textContent : new Date().toISOString(),
+            source: feed.source
+        }));
+    } catch (e) {
+        console.error(`Feed ${feed.name} race failed:`, e);
+        throw e;
+    }
+}
+
+/**
+ * Races multiple proxies simultaneously for high-speed RSS fetching.
+ * Uses CapacitorHttp if available to bypass CORS in native app.
+ */
+async function fetchRssRacing(targetUrl, timeout = 7000) {
+    const isNative = window.Capacitor && window.Capacitor.isNativePlatform();
+
+    // Proxies definition
+    const proxies = [
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
+        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`
+    ];
+
+    if (window.location.port === '8888') {
+        proxies.unshift(`/.netlify/functions/proxy?url=${encodeURIComponent(targetUrl)}`);
+    }
+
+    const validateRss = (text) => {
+        if (!text || text.length < 500) throw new Error("Incomplete");
+        const trimmed = text.trim();
+        const isXml = trimmed.startsWith('<?xml') || trimmed.startsWith('<rss') || trimmed.startsWith('<feed');
+        if (!isXml) throw new Error("Not valid RSS/XML");
+
+        const lowerText = text.toLowerCase();
+        if (lowerText.includes('pardon our interruption') ||
+            lowerText.includes('checking your browser') ||
+            lowerText.includes('access denied')) {
+            throw new Error("Bot detection");
+        }
+        return true;
+    };
+
+    const tryFetch = async (url, label) => {
+        try {
+            const text = await nativeFetch(url, { timeout: 6000 });
+            validateRss(text);
+            console.log(`[Race Win] ${label}: ${url.slice(0, 40)}`);
+            return text;
+        } catch (e) {
+            // Silence warning for racing to keep logs clean, only error if all fail
+            throw e;
+        }
+    };
+
+    // START ALL AT ONCE
+    const racingTasks = proxies.map(p => tryFetch(p, "Proxy"));
+    if (isNative) {
+        racingTasks.push(tryFetch(targetUrl, "Direct"));
+    }
+
+    try {
+        const controller = new AbortController();
+        const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Race Timeout")), timeout)
+        );
+
+        // Promise.any returns the FIRST successful result
+        return await Promise.race([
+            Promise.any(racingTasks),
+            timeoutPromise
+        ]);
+    } catch (e) {
+        console.error("All racing paths failed for:", targetUrl);
+        throw new Error("All Fetching Paths Failed");
+    }
+}
+
+/**
+ * Races high-priority global feeds to get the fastest reliable news.
+ */
+async function fetchGlobalNews() {
+    console.log("Racing high-priority global feeds...");
+    try {
+        // Try to get at least one successful feed within 6 seconds
+        return await Promise.any(HIGH_PRIORITY_FEEDS.map(feed => fetchFromRss(feed, 6000)));
+    } catch (error) {
+        console.error("All high-priority feeds failed:", error);
+        throw error;
+    }
+}
+
+/**
+ * Attempts to find a destination URL in common redirect/notice pages.
+ */
+function extractRedirectUrl(html, currentUrl) {
+    if (!html || html.length > 30000) return null; // Increased limit slightly
+
+    // 1. Look for meta refresh
+    const refreshMatch = html.match(/<meta[^>]+http-equiv=["']refresh["'][^>]+content=["'][^"']*url=([^"'>;]+)["']/i);
+    if (refreshMatch) return refreshMatch[1].trim();
+
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+
+    // 2. Specialized handling for Google "Redirect Notice"
+    const anchors = doc.querySelectorAll('a');
+    for (const a of anchors) {
+        let href = a.getAttribute('href');
+        if (!href) continue;
+
+        // Extract final URL from Google redirect link if necessary
+        if (href.includes('google.com/url') && href.includes('q=')) {
+            const urlMatch = href.match(/q=([^&]+)/);
+            if (urlMatch) href = decodeURIComponent(urlMatch[1]);
+        } else if (href.includes('google.com/url') && href.includes('url=')) {
+            const urlMatch = href.match(/url=([^&]+)/);
+            if (urlMatch) href = decodeURIComponent(urlMatch[1]);
+        }
+
+        if (href && href.startsWith('http') && !href.includes('support.google.com') && !href.includes('accounts.google.com')) {
+            // If the page is small and has few links, it's likely a redirect page
+            if (anchors.length < 10 || html.length < 5000) {
+                return href;
+            }
+        }
+    }
+
+    // 3. Look for window.location in scripts
+    const scriptMatch = html.match(/window\.location\.(?:replace|href)\s*=\s*(["'])([^"']+)\1/);
+    if (scriptMatch) return scriptMatch[2];
+
+    // 4. Specialized handling for Bing apiclick
+    if ((currentUrl.includes('bing.com') || currentUrl.includes('bing-news')) && html.includes('apiclick.aspx')) {
+        const apiclickMatch = html.match(/href=["']([^"']*apiclick\.aspx[^"']+)["']/i);
+        if (apiclickMatch) return apiclickMatch[1];
+    }
+
+    // 5. Look for any single high-confidence link in a tiny page
+    if (html.length < 3000 && anchors.length === 1) {
+        return anchors[0].href;
+    }
+
+    return null;
+}
+
+/**
+ * Validates if the returned HTML is actual content or a bot-blocking page.
+ */
+function isValidArticleHTML(html) {
+    if (!html || html.length < 500) return false;
+    const lower = html.toLowerCase();
+
+    // Check for explicit bot blocker PHRASES (not just words)
+    const blockers = [
+        'pardon our interruption',
+        'distil networks',
+        'access to this page has been denied',
+        'checking your browser',
+        'bot or a human',
+        'automated access',
+        'enable cookies',
+        'access denied',
+        'robot check',
+        'captcha',
+        'security check'
+    ];
+
+    if (blockers.some(phrase => lower.includes(phrase))) {
+        console.warn(`[Content Rejected] Bot blocker detected: ${blockers.find(p => lower.includes(p))}`);
+        return false;
+    }
+
+    // If it's a tiny page with a redirect notice, we return true so fetchArticleHTML can try to follow it
+    const hasRedirectIndicators = lower.includes('redirect') ||
+        lower.includes('click here') ||
+        lower.includes('http-equiv="refresh"') ||
+        lower.includes('window.location') ||
+        lower.includes('url=');
+
+    if (html.length < 3000 && hasRedirectIndicators) return true;
+
+    return html.length > 1000; // Increased threshold for "real" content
+}
+
+/**
+ * Races multiple proxies to fetch article HTML, recursively following redirects.
+ */
+async function fetchArticleHTML(targetUrl, depth = 0) {
+    if (depth > 2) throw new Error("Too many redirects");
+
+    console.log(`Fetching (depth ${depth}): ${targetUrl}`);
+
+    const proxies = [
+        targetUrl, // Try direct first (nativeFetch handles this well for native)
+        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
+        `https://api.codetabs.com/v1/proxy?url=${encodeURIComponent(targetUrl)}`
+    ];
+
+    const uniqueProxies = [...new Set(proxies)];
+
+    const fetchProxy = async (url) => {
+        const start = Date.now();
+        const html = await nativeFetch(url, { timeout: 12000 });
+
+        console.log(`Proxy ${url} responded in ${Date.now() - start}ms. Length: ${html.length}`);
+
+        if (!isValidArticleHTML(html)) {
+            console.warn(`Proxy ${url} returned invalid/blocked HTML`);
+            throw new Error("Blocked page");
+        }
+
+        // Check for internal redirect notice
+        const redirectUrl = extractRedirectUrl(html, targetUrl);
+        if (redirectUrl && redirectUrl !== targetUrl) {
+            let finalRedirect = redirectUrl;
+            // Handle relative URLs
+            if (!redirectUrl.startsWith('http')) {
+                try {
+                    finalRedirect = new URL(redirectUrl, targetUrl).href;
+                } catch (e) {
+                    console.warn("Failed to construct absolute redirect URL", e);
+                }
+            }
+            console.log(`Detected redirect to: ${finalRedirect}`);
+            return await fetchArticleHTML(finalRedirect, depth + 1);
+        }
+
+        return html;
+    };
+
+    try {
+        const result = await Promise.any(uniqueProxies.map(url => fetchProxy(url)));
+        return result;
+    } catch (error) {
+        console.error("Fetch failed for:", targetUrl);
+        throw new Error("All proxy sources failed.");
+    }
+}
+
 async function fetchBingNews(countryCode) {
     try {
         const countryName = COUNTRY_NAMES[countryCode] || countryCode;
-        const rssUrl = `https://www.bing.com/news/search?q=${encodeURIComponent(countryName)}+news&format=rss`;
-        const proxyUrl = getProxyUrl(rssUrl);
+        const cc = countryCode.toUpperCase();
+        const info = COUNTRY_LANGUAGES[countryCode];
+        const hl = (info && info.lang) || 'en';
 
-        console.log(`Fetching Bing News for ${countryCode} via ${proxyUrl}`);
-        const response = await fetch(proxyUrl);
-        if (!response.ok) throw new Error("Bing proxy failed");
+        // Refined Bing Search with localization parameters
+        const rssUrl = `https://www.bing.com/news/search?q=${encodeURIComponent(countryName)}+news&format=rss&cc=${cc}&setlang=${hl}&qs=n&form=NTYA&count=20`;
 
-        const xmlText = await response.text();
+        const xmlText = await fetchRssRacing(rssUrl, 7000);
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(xmlText, "text/xml");
 
         const items = Array.from(xmlDoc.querySelectorAll("item")).slice(0, 10);
+        if (items.length === 0) throw new Error("Bing returned zero results");
+
         return items.map(item => ({
             title: item.querySelector("title").textContent,
             link: item.querySelector("link").textContent,
@@ -217,160 +1121,238 @@ async function fetchBingNews(countryCode) {
             source: 'Bing News'
         }));
     } catch (error) {
-        console.error("Bing News Error:", error);
+        console.error("Bing News Error, trying Google fallback:", error);
+        // Fallback to Google News search for the same country
+        const info = COUNTRY_LANGUAGES[countryCode];
+        if (info) {
+            const cc = countryCode.toUpperCase();
+            const hl = info.lang || 'en';
+            const rssUrl = `https://news.google.com/rss?gl=${cc}&hl=${hl}&ceid=${cc}:${hl}`;
+            return await fetchFromRss({ name: 'Google (fallback)', url: rssUrl, source: 'Bing News' }, 6000);
+        }
         throw error;
     }
 }
 
 async function fetchBBCNews(countryCode) {
+    const countryName = COUNTRY_NAMES[countryCode] || countryCode;
+    const isUK = countryCode.toLowerCase() === 'gb';
+
+    // Tier 1: Localized Search (Use Google for Speed)
+    if (!isUK) {
+        try {
+            console.log(`[BBC Tier 1] Attempting localized Google search for: ${countryName}`);
+            const rssUrl = `https://news.google.com/rss/search?q=site:bbc.com+${encodeURIComponent(countryName)}+news&hl=en&gl=${countryCode.toUpperCase()}&ceid=${countryCode.toUpperCase()}:en`;
+            const articles = await fetchFromRss({ name: 'BBC Search', url: rssUrl, source: 'BBC News' }, 4000);
+            if (articles && articles.length > 3) return articles; // Expect at least 4 articles for a "good" localized result
+        } catch (e) {
+            console.warn(`[BBC Tier 1 Fail] Localized search failed for ${countryName}: ${e.message}`);
+        }
+    }
+
+    // Tier 2: Direct Regional Feeds
+    const regionalFeeds = {
+        'africa': ['ng', 'za', 'ke', 'gh', 'eg', 'ma', 'dz', 'tn', 'ly', 'sd', 'et'],
+        'asia': ['cn', 'hk', 'jp', 'kr', 'in', 'id', 'my', 'ph', 'sg', 'th', 'vn', 'pk', 'bd'],
+        'europe': ['gb', 'fr', 'de', 'it', 'es', 'be', 'nl', 'no', 'se', 'dk', 'fi', 'pl', 'ro', 'gr', 'tr', 'ru', 'ua'],
+        'middle_east': ['ae', 'sa', 'il', 'jo', 'lb', 'qa', 'kw'],
+        'us_and_canada': ['us', 'ca'],
+        'latin_america': ['br', 'mx', 'ar', 'co', 'cl', 'pe', 've', 'cu']
+    };
+
+    let path = 'world'; // Default
+    const r = countryCode.toLowerCase();
+
+    if (regionalFeeds['africa'].includes(r)) path = 'world/africa';
+    else if (regionalFeeds['asia'].includes(r)) path = 'world/asia';
+    else if (regionalFeeds['europe'].includes(r)) {
+        path = (r === 'gb') ? 'uk' : 'world/europe';
+    }
+    else if (regionalFeeds['middle_east'].includes(r)) path = 'world/middle_east';
+    else if (regionalFeeds['us_and_canada'].includes(r)) path = 'world/us_and_canada';
+    else if (regionalFeeds['latin_america'].includes(r)) path = 'world/latin_america';
+
     try {
-        const countryName = COUNTRY_NAMES[countryCode] || countryCode;
-        // Use Bing RSS search restricted to BBC domain for the specific country
-        const rssUrl = `https://www.bing.com/news/search?q=site:bbc.com+${encodeURIComponent(countryName)}+news&format=rss`;
-        const proxyUrl = getProxyUrl(rssUrl);
-
-        console.log(`Fetching BBC News for ${countryCode} via ${proxyUrl}`);
-        const response = await fetchWithTimeout(proxyUrl, { timeout: 2000 });
-        if (!response.ok) throw new Error("BBC News source failed");
-
-        const xmlText = await response.text();
-        const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-
-        const items = Array.from(xmlDoc.querySelectorAll("item")).slice(0, 10);
-        return items.map(item => ({
-            title: item.querySelector("title").textContent.trim(),
-            link: item.querySelector("link").textContent,
-            pubDate: item.querySelector("pubDate") ? item.querySelector("pubDate").textContent : new Date().toISOString(),
-            source: 'BBC News'
-        }));
+        const bbcUrl = `https://feeds.bbci.co.uk/news/${path}/rss.xml`;
+        console.log(`[BBC Tier 2] Attempting regional feed: ${bbcUrl}`);
+        const articles = await fetchFromRss({ name: 'BBC News', url: bbcUrl, source: 'BBC News' }, 4000);
+        if (articles && articles.length > 0) return articles;
     } catch (error) {
-        console.error("BBC News Error:", error);
-        throw error;
+        console.error(`[BBC Tier 2 Fail] Regional feed failed for ${path}: ${error.message}`);
+    }
+
+    // Tier 3: Global World Feed (Final Fallback)
+    try {
+        const worldUrl = 'https://feeds.bbci.co.uk/news/world/rss.xml';
+        console.log(`[BBC Tier 3] Final fallback to World feed: ${worldUrl}`);
+        return await fetchFromRss({ name: 'BBC World', url: worldUrl, source: 'BBC News' }, 4000);
+    } catch (e) {
+        console.error(`[BBC Tier 3 Fail] All BBC sources failed: ${e.message}`);
+        return [];
+    }
+}
+
+async function fetchReutersNews(countryCode) {
+    const countryName = COUNTRY_NAMES[countryCode] || countryCode;
+
+    // Tier 1: Localized Search (Use Google for Speed)
+    try {
+        console.log(`[Reuters Tier 1] Attempting localized Google search for: ${countryName}`);
+        const rssUrl = `https://news.google.com/rss/search?q=site:reuters.com+${encodeURIComponent(countryName)}+news&hl=en&gl=${countryCode.toUpperCase()}&ceid=${countryCode.toUpperCase()}:en`;
+        const articles = await fetchFromRss({ name: 'Reuters Search', url: rssUrl, source: 'Reuters News' }, 4000);
+        if (articles && articles.length > 3) return articles;
+    } catch (e) {
+        console.warn(`[Reuters Tier 1 Fail] Localized search failed for ${countryName}: ${e.message}`);
+    }
+
+    // Tier 2: World News (Robust XML Fallback via Google Search)
+    try {
+        const reutersUrl = 'https://news.google.com/rss/search?q=site:reuters.com+Top+News&hl=en&gl=US&ceid=US:en';
+        console.log(`[Reuters Tier 2] Falling back to Top News feed: ${reutersUrl}`);
+        return await fetchFromRss({ name: 'Reuters World', url: reutersUrl, source: 'Reuters News' }, 4000);
+    } catch (e) {
+        console.error(`[Reuters Tier 2 Fail] Reuters feed failed: ${e.message}`);
+        return [];
+    }
+}
+
+function setupSettingsHandlers() {
+    const settingsBtn = document.getElementById('settings-btn');
+    const settingsModal = document.getElementById('settings-modal');
+    const closeSettings = document.getElementById('close-settings');
+    const saveSettings = document.getElementById('save-settings');
+    const sourceRadios = document.getElementsByName('preferred-source');
+
+    if (settingsBtn) {
+        settingsBtn.onclick = () => {
+            // Set radio to current preference
+            sourceRadios.forEach(radio => {
+                if (radio.value === preferredSource) radio.checked = true;
+            });
+            const externalToggle = document.getElementById('external-safari-toggle');
+            if (externalToggle) externalToggle.checked = openInExternalSafari;
+            settingsModal.classList.remove('hidden');
+        };
+    }
+
+    if (closeSettings) {
+        closeSettings.onclick = () => settingsModal.classList.add('hidden');
+    }
+
+    if (saveSettings) {
+        saveSettings.onclick = () => {
+            const selected = Array.from(sourceRadios).find(r => r.checked);
+            if (selected) {
+                preferredSource = selected.value;
+                localStorage.setItem('preferredSource', preferredSource);
+            }
+            const externalToggle = document.getElementById('external-safari-toggle');
+            if (externalToggle) {
+                openInExternalSafari = externalToggle.checked;
+                localStorage.setItem('openInExternalSafari', openInExternalSafari);
+            }
+            settingsModal.classList.add('hidden');
+
+            // Refresh if country is selected
+            if (countrySelect && countrySelect.value) {
+                refreshNews();
+            }
+        };
     }
 }
 
 async function fetchNews(countryCode, targetLang = 'original', forcedSource = null) {
     showLoading();
-
     let articles = [];
     let fetchError = null;
 
-    // 1. Try Google News with 2s timeout (only if we have a config for it)
     try {
-        const info = COUNTRY_LANGUAGES[countryCode];
-        if (!info && !forcedSource) {
-            throw new Error("No Google News config for this region");
-        }
+        if (!countryCode && !forcedSource) {
+            articles = await fetchGlobalNews();
+        } else {
+            // Priority sequence: forced, then preferred, then others
+            let sequence = forcedSource ? [forcedSource] : [preferredSource];
 
-        const cc = countryCode.toUpperCase();
-        let hl = info.lang;
-        let gl = cc;
-        let ceid = `${cc}:${info.lang}`;
+            // Add other sources to the sequence if not already present
+            if (!forcedSource) {
+                const others = ['google', 'bing', 'bbc', 'reuters'].filter(s => s !== preferredSource);
+                sequence = sequence.concat(others);
+            }
 
-        const rssUrl = `https://news.google.com/rss?gl=${gl}&hl=${hl}&ceid=${ceid}`;
-        const proxyUrl = getProxyUrl(rssUrl);
-        console.log(`Fetching Google News via ${proxyUrl}`);
+            let success = false;
 
-        const response = await fetchWithTimeout(proxyUrl, { timeout: 2000 });
-        if (!response.ok) throw new Error("Google News Request Failed");
-
-        const xmlText = await response.text();
-        const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-
-        const parseError = xmlDoc.getElementsByTagName("parsererror");
-        if (parseError.length > 0) throw new Error("Google News Parse Error");
-
-        const items = Array.from(xmlDoc.querySelectorAll("item")).slice(0, 10);
-        articles = items.map(item => ({
-            title: item.querySelector("title").textContent,
-            link: item.querySelector("link").textContent,
-            pubDate: item.querySelector("pubDate").textContent,
-            source: item.querySelector("source") ? item.querySelector("source").textContent : 'Google News'
-        }));
-
-        updateSourceDropdown('google');
-
-    } catch (error) {
-        // If user explicitly chose Google, don't automatically fallback silently if it fails
-        if (forcedSource === 'google') {
-            console.error("Manual Google News fetch failed:", error);
-            fetchError = `Google News failed: ${error.message}`;
-        } else if (!forcedSource) {
-            console.warn(`Google News failed or timed out: ${error.message}. Switching to Bing...`);
-            try {
-                articles = await fetchBingNews(countryCode);
-                updateSourceDropdown('bing');
-            } catch (bingError) {
-                console.warn(`Bing News also failed. Switching to BBC...`);
+            for (const source of sequence) {
                 try {
-                    articles = await fetchBBCNews(countryCode);
-                    updateSourceDropdown('bbc');
-                } catch (bbcError) {
-                    fetchError = "Failed to fetch news from all sources (Google, Bing, BBC).";
+                    if (source === 'bing') {
+                        articles = await fetchBingNews(countryCode);
+                        success = true;
+                    } else if (source === 'bbc') {
+                        articles = await fetchBBCNews(countryCode);
+                        success = true;
+                    } else if (source === 'google' || (source === 'google_regional')) {
+                        const info = COUNTRY_LANGUAGES[countryCode];
+                        const countryName = COUNTRY_NAMES[countryCode] || countryCode;
+                        if (info) {
+                            const cc = countryCode.toUpperCase();
+                            let hl = info.lang || 'en';
+                            let ceid = `${cc}:${hl}`;
+
+                            // More robust search-based RSS for better regional coverage
+                            const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(countryName)}+news&hl=${hl}&gl=${cc}&ceid=${ceid}`;
+                            console.log(`[Google Regional RSS]: ${rssUrl}`);
+
+                            articles = await fetchFromRss({ name: 'Google News', url: rssUrl, source: 'Google News' }, 6000);
+                            if (articles && articles.length > 0) success = true;
+                        }
+                    } else if (source === 'reuters') {
+                        articles = await fetchReutersNews(countryCode);
+                        success = (articles && articles.length > 0);
+                    }
+                    if (success && articles.length > 0) break;
+                } catch (e) {
+                    console.warn(`Source ${source} failed, trying next in sequence...`);
                 }
             }
-        }
-    }
 
-    // 2. If user specifically requested Bing
-    if (forcedSource === 'bing') {
-        try {
-            articles = await fetchBingNews(countryCode);
-            updateSourceDropdown('bing');
-        } catch (error) {
-            console.warn(`Manual Bing News failed. Switching to BBC...`);
-            try {
-                articles = await fetchBBCNews(countryCode);
-                updateSourceDropdown('bbc');
-            } catch (bbcError) {
-                fetchError = `Bing News failed and BBC News fallback also failed.`;
+            // Final fallback to global if nothing worked
+            if (!success || articles.length === 0) {
+                console.warn("All regional sources failed, falling back to Global Racing...");
+                articles = await fetchGlobalNews();
             }
         }
-    }
 
-    // 3. If user specifically requested BBC
-    if (forcedSource === 'bbc') {
-        try {
-            articles = await fetchBBCNews(countryCode);
-            updateSourceDropdown('bbc');
-        } catch (error) {
-            fetchError = `BBC News failed: ${error.message}`;
+        if (articles.length === 0) {
+            fetchError = "No news headlines found. Please try a different source or region.";
+        } else {
+            const countryLang = (COUNTRY_LANGUAGES[countryCode] && COUNTRY_LANGUAGES[countryCode].lang) || 'en';
+            if (targetLang !== 'original') {
+                articles = await Promise.all(articles.map(async (art) => {
+                    const tTitle = await translateText(art.title, targetLang);
+                    return { ...art, title: tTitle };
+                }));
+            } else if (countryLang !== 'en' && countryCode) {
+                articles = await Promise.all(articles.map(async (art) => {
+                    if (art.source === 'Bing News' || art.source === 'BBC News' || art.source === 'AP News' || art.source === 'The Guardian') {
+                        const tTitle = await translateText(art.title, countryLang);
+                        return { ...art, title: tTitle };
+                    }
+                    return art;
+                }));
+            }
+            renderNews(articles);
+            return; // Success!
         }
+    } catch (error) {
+        console.error("Fetch News Critical Failure:", error);
+        fetchError = "Unable to load news headlines. This usually happens when proxies are temporarily over capacity. Please try again in a few seconds.";
     }
 
     if (fetchError) {
         showError(fetchError);
-        return;
-    }
-
-    const countryLang = (COUNTRY_LANGUAGES[countryCode] && COUNTRY_LANGUAGES[countryCode].lang) || 'en';
-
-    if (targetLang !== 'original') {
-        // User explicitly chose a language, translate everything
-        const translatedArticles = await Promise.all(articles.map(async (art) => {
-            const tTitle = await translateText(art.title, targetLang);
-            return { ...art, title: tTitle };
-        }));
-        renderNews(translatedArticles);
-    } else if (countryLang !== 'en') {
-        // User chose "Original", but Bing/BBC are in English.
-        // Translate Bing/BBC to the country's native language if it's not English.
-        const translatedArticles = await Promise.all(articles.map(async (art) => {
-            if (art.source === 'Bing News' || art.source === 'BBC News') {
-                const tTitle = await translateText(art.title, countryLang);
-                return { ...art, title: tTitle };
-            }
-            return art;
-        }));
-        renderNews(translatedArticles);
-    } else {
-        renderNews(articles);
     }
 }
 
-function renderNews(articles) {
+function renderNews(articles, isSavedView = false, isBookmarkView = false) {
     newsContainer.innerHTML = '';
     if (articles.length === 0) {
         showEmpty("No news found.");
@@ -381,6 +1363,27 @@ function renderNews(articles) {
         const card = document.createElement('article');
         card.className = 'news-card';
         card.style.animationDelay = `${index * 0.1}s`;
+        card.style.cursor = 'pointer';
+
+        const isBookmarked = bookmarkedArticles.some(a => a.link === article.link);
+
+        card.onclick = (e) => {
+            e.preventDefault();
+            // Requirements 1 & 2: Click headline opens in native browser (Home and Bookmarks)
+            // isSavedView remains as reader mode
+            if (isSavedView) {
+                openArticle(article, false);
+            } else {
+                openInNativeBrowser(article.link);
+            }
+        };
+
+        // Simple pre-fetching on hover to speed up loading
+        card.onmouseenter = () => {
+            if (!article.content) {
+                fetchArticleHTML(article.link).catch(() => { });
+            }
+        };
 
         const date = new Date(article.pubDate).toLocaleDateString(undefined, {
             year: 'numeric', month: 'long', day: 'numeric'
@@ -388,13 +1391,39 @@ function renderNews(articles) {
 
         card.innerHTML = `
             <div class="news-content">
-                <div class="news-source">${article.source}</div>
-                <a href="${article.link}" target="_blank" class="news-title">${article.title}</a>
-                <div class="news-meta">
-                    <span>${date}</span>
+                <div class="news-source">
+                    <div class="source-left">
+                        <span>${article.source}</span>
+                        <span class="news-date">${date}</span>
+                    </div>
+                    <button class="bookmark-btn ${isBookmarked ? 'active' : ''}" title="Bookmark">
+                        ${isBookmarked ?
+                `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>` :
+                `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>`
+            }
+                    </button>
                 </div>
+                <div class="news-title">${article.title}</div>
+                ${isSavedView ? `<button class="card-delete-btn" title="Delete">🗑️ Delete</button>` : ''}
             </div>
         `;
+
+        const bkmkBtn = card.querySelector('.bookmark-btn');
+        bkmkBtn.onclick = (e) => {
+            e.stopPropagation();
+            toggleBookmark(article, e);
+        };
+
+        if (isSavedView) {
+            const delBtn = card.querySelector('.card-delete-btn');
+            if (delBtn) {
+                delBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    deleteArticle(e, article.link);
+                };
+            }
+        }
+
         newsContainer.appendChild(card);
     });
 }
@@ -411,10 +1440,58 @@ function showEmpty(msg) {
     newsContainer.innerHTML = `<div class="empty-state"><h3>${msg}</h3></div>`;
 }
 
-function updateSourceDropdown(source) {
-    const sourceDropdown = document.getElementById('source-dropdown');
-    if (sourceDropdown && (source === 'google' || source === 'bing' || source === 'bbc')) {
-        sourceDropdown.value = source;
+async function resolveUrl(url) {
+    const isNative = window.Capacitor && window.Capacitor.isNativePlatform();
+    if (!isNative || !window.Capacitor.Plugins.CapacitorHttp) return url;
+
+    try {
+        console.log(`[URL Resolver] Tracking: ${url.slice(0, 50)}...`);
+        // Just a fast HEAD-like get to find the final landing page
+        const response = await window.Capacitor.Plugins.CapacitorHttp.get({
+            url: url,
+            headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1' },
+            connectTimeout: 4000,
+            readTimeout: 4000
+        });
+        if (response.url && response.url !== url) {
+            console.log(`[URL Resolver] Resolved to: ${response.url.slice(0, 50)}...`);
+            return response.url;
+        }
+        return url;
+    } catch (e) {
+        console.warn("[URL Resolver] Failed to resolve:", e.message);
+        return url;
+    }
+}
+
+async function openInNativeBrowser(url) {
+    const isNative = window.Capacitor && window.Capacitor.isNativePlatform();
+
+    // Resolve URL first to help Safari translation
+    let finalUrl = url;
+    if (isNative && (url.includes('google.com/url') || url.includes('bing.com') || url.includes('news.google.com'))) {
+        finalUrl = await resolveUrl(url);
+    }
+
+    if (isNative && window.Capacitor.Plugins) {
+        try {
+            if (openInExternalSafari) {
+                // Open in Standalone Safari
+                console.log("[Browser] Opening in standalone Safari:", finalUrl);
+                window.open(finalUrl, '_system');
+            } else if (window.Capacitor.Plugins.Browser) {
+                // Open in In-App Browser (SFSafariViewController)
+                console.log("[Browser] Opening in-app:", finalUrl);
+                await window.Capacitor.Plugins.Browser.open({ url: finalUrl });
+            } else {
+                window.open(finalUrl, '_blank');
+            }
+        } catch (e) {
+            console.error("Native Browser Error:", e);
+            window.open(finalUrl, '_blank');
+        }
+    } else {
+        window.open(finalUrl, '_blank');
     }
 }
 
