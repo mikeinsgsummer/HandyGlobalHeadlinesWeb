@@ -1037,7 +1037,7 @@ mark.news-highlight {
     width: 100% !important;
 }
 
-@media (max-width: 380px) {
+@media (max-width: 480px) {
 
     .sources-grid,
     .interests-grid {
@@ -1048,7 +1048,8 @@ mark.news-highlight {
 .radio-option,
 .checkbox-option {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
+    /* Ensure check/radio stays at top for multiline text */
     gap: 0.6rem !important;
     cursor: pointer;
     background: var(--card-bg);

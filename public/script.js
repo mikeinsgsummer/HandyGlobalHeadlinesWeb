@@ -1327,15 +1327,7 @@ async function fetchNews(countryCode, targetLang = 'original') {
     let allArticles = [];
     let fetchError = null;
 
-    // Smart interest keywords mapping
-    const INTEREST_KEYWORDS = {
-        'politics': '(politics OR society OR environment OR government OR policy OR climate OR "global warming")',
-        'finance': '(finance OR economy OR trade OR stock OR business OR banking OR markets)',
-        'sports': '(sports OR entertainment OR arts OR movies OR music OR celebrity OR fashion)',
-        'technology': '(technology OR science OR academics OR research OR innovation OR space OR AI)',
-        'health': '(health OR medical OR food OR nutrition OR wellness OR medicine OR disease)',
-        'travel': '(travel OR leisure OR tourism OR vacation OR airlines OR hospitality)'
-    };
+    // Interest keywords mapping already defined globally (lines 80-87)
 
     try {
         if (!countryCode) {
@@ -1345,7 +1337,10 @@ async function fetchNews(countryCode, targetLang = 'original') {
             let interestQuery = "";
 
             if (preferredInterests.length > 0) {
-                const keywords = preferredInterests.map(i => INTEREST_KEYWORDS[i]).filter(k => !!k);
+                const keywords = preferredInterests.map(i => {
+                    const terms = INTEREST_KEYWORDS[i] || [];
+                    return terms.length > 0 ? `(${terms.join(" OR ")})` : "";
+                }).filter(k => !!k);
                 if (keywords.length > 0) {
                     interestQuery = " " + keywords.join(" OR ");
                 }
@@ -1453,11 +1448,6 @@ function updateInterestMenu() {
     const menu = document.getElementById('interest-menu');
     if (!menu) return;
 
-    if (preferredInterests.length === 0) {
-        menu.classList.add('hidden');
-        return;
-    }
-
     menu.classList.remove('hidden');
     menu.innerHTML = '';
 
@@ -1469,7 +1459,9 @@ function updateInterestMenu() {
     allTab.onclick = () => filterNewsByInterest('all');
     menu.appendChild(allTab);
 
-    preferredInterests.forEach(interest => {
+    const displayInterests = preferredInterests.length > 0 ? preferredInterests : Object.keys(INTEREST_KEYWORDS);
+
+    displayInterests.forEach(interest => {
         const tab = document.createElement('div');
         tab.className = `interest-tab ${currentActiveInterest === interest ? 'active' : ''}`;
         tab.textContent = INTEREST_ICONS[interest] || interest;
