@@ -21,7 +21,6 @@ if (!Promise.any) {
     };
 }
 
-// Array.prototype.flat Polyfill
 if (!Array.prototype.flat) {
     Array.prototype.flat = function (depth = 1) {
         return this.reduce((acc, val) =>
@@ -30,14 +29,12 @@ if (!Array.prototype.flat) {
     };
 }
 
-// Array.prototype.flatMap Polyfill
 if (!Array.prototype.flatMap) {
     Array.prototype.flatMap = function (callback, thisArg) {
         return this.map(callback, thisArg).flat();
     };
 }
 
-// AggregateError Polyfill (Basic)
 if (!window.AggregateError) {
     window.AggregateError = function (errors, message) {
         const error = new Error(message);
@@ -45,6 +42,19 @@ if (!window.AggregateError) {
         error.errors = errors;
         return error;
     };
+}
+
+/**
+ * Requirement: Prevent app-wide crashes on storage corruption.
+ */
+function safeParse(key, fallback) {
+    try {
+        const val = localStorage.getItem(key);
+        return val ? JSON.parse(val) : fallback;
+    } catch (e) {
+        console.warn(`[Storage] SafeParse failed for ${key}, using fallback.`, e.message);
+        return fallback;
+    }
 }
 
 const countrySelect = document.getElementById('country-select');
@@ -117,10 +127,10 @@ let currentArticle = null;
 let readerFontSize = parseInt(localStorage.getItem('readerFontSize')) || 18;
 let readerDarkMode = localStorage.getItem('readerDarkMode') === 'true';
 let isReaderMode = true;
-let savedArticles = JSON.parse(localStorage.getItem('savedArticles')) || [];
-let bookmarkedArticles = JSON.parse(localStorage.getItem('bookmarkedArticles')) || [];
-let preferredSources = JSON.parse(localStorage.getItem('preferredSources')) || ['google'];
-let preferredInterests = JSON.parse(localStorage.getItem('preferredInterests')) || [];
+let savedArticles = safeParse('savedArticles', []);
+let bookmarkedArticles = safeParse('bookmarkedArticles', []);
+let preferredSources = safeParse('preferredSources', ['google']);
+let preferredInterests = safeParse('preferredInterests', []);
 let openInExternalSafari = localStorage.getItem('openInExternalSafari') === 'true';
 let allArticlesList = []; // Store fetched headlines for filtering
 let currentActiveInterest = 'all';
@@ -970,74 +980,95 @@ async function fetchFromRss(feed, timeout = 5000) {
  * Uses CapacitorHttp if available to bypass CORS in native app.
  */
 async function fetchRssRacing(targetUrl, timeout = 7000) {
+    console.log(`[Fetch Start] Targeting: ${targetUrl.slice(0, 60)}...`);
     const isNative = window.Capacitor && window.Capacitor.isNativePlatform();
 
-    // Diversified Proxies for maximum cross-platform reliability
+    // 1. AllOrigins JSON endpoint (often more reliable than /raw for CORS)
+    const allOriginsJson = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+
+    // Primary Racing Selection
     const proxies = [
-        `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
         `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
         `https://api.codetabs.com/v1/proxy?url=${encodeURIComponent(targetUrl)}`,
+        allOriginsJson
     ];
 
-    // Priority proxy for local development
     if (window.location.port === '8888') {
         proxies.unshift(`/.netlify/functions/proxy?url=${encodeURIComponent(targetUrl)}`);
     }
 
     const validateRss = (text) => {
-        if (!text || text.length < 300) throw new Error("Incomplete");
+        if (!text || text.length < 200) throw new Error("Empty or trivial response");
         const trimmed = text.trim();
-        const isXml = trimmed.startsWith('<?xml') || trimmed.startsWith('<rss') || trimmed.startsWith('<feed') || trimmed.includes('<channel>');
-        if (!isXml) throw new Error("Not valid RSS/XML");
+        // Be permissive with leading whitespace/BOM for mobile networks
+        const isXml = /^\s*(?:<\?xml|<rss|<feed|<channel)/i.test(trimmed);
+        if (!isXml) throw new Error("Format is not valid XML/RSS");
 
         const lowerText = text.toLowerCase();
-        if (lowerText.includes('pardon our interruption') ||
-            lowerText.includes('checking your browser') ||
-            lowerText.includes('access denied') ||
-            lowerText.includes('bot detection') ||
-            lowerText.includes('security check')) {
-            throw new Error("Bot detection");
+        const blockers = ['pardon our interruption', 'checking your browser', 'access denied', 'bot detection', 'security check'];
+        if (blockers.some(b => lowerText.includes(b))) {
+            throw new Error(`Cloudflare/Bot blocker: ${blockers.find(b => lowerText.includes(b))}`);
         }
         return true;
     };
 
     const tryFetch = async (url, label) => {
         try {
-            // Adaptive timeout based on source
-            const fetchTimeout = label === "Direct" ? 5000 : 8000;
-            const text = await nativeFetch(url, { timeout: fetchTimeout });
-            validateRss(text);
-            console.log(`[Fetch Success] ${label}: ${url.slice(0, 45)}...`);
-            return text;
+            const fetchTimeout = label === "Direct" ? 6000 : 9000;
+            let responseText = await nativeFetch(url, { timeout: fetchTimeout });
+
+            // Handle AllOrigins JSON wrapper if necessary
+            if (url.includes('allorigins.win/get')) {
+                const json = JSON.parse(responseText);
+                responseText = json.contents;
+            }
+
+            validateRss(responseText);
+            return responseText;
         } catch (e) {
-            console.warn(`[Fetch Fail] ${label}: ${e.message}`);
-            throw e;
+            throw new Error(`[${label}] ${e.message}`);
         }
     };
 
-    // Prepare racing tasks
+    /**
+     * STAGE 1: THE RACE (Speed Optimized)
+     */
     const racingTasks = proxies.map((p, idx) => tryFetch(p, `Proxy-${idx}`));
-    if (isNative) {
-        racingTasks.push(tryFetch(targetUrl, "Direct"));
-    }
+    if (isNative) racingTasks.push(tryFetch(targetUrl, "Direct"));
 
     try {
         const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Race Timeout")), timeout + 1000)
+            setTimeout(() => reject(new Error("Race Timeout")), timeout + 2000)
         );
 
-        // Promise.any returns the FIRST successful result
         return await Promise.race([
             Promise.any(racingTasks),
             timeoutPromise
         ]);
     } catch (e) {
-        console.error("All fetch attempts failed for:", targetUrl);
-        // Provide more detailed diagnostic in console
-        if (e.errors) {
-            e.errors.forEach((err, i) => console.warn(`Error ${i}: ${err.message}`));
+        console.warn("[Race Failed] Entering Sequential Fallback Mode...", e.message);
+
+        /**
+         * STAGE 2: SEQUENTIAL FALLBACK (Reliability Optimized)
+         * Try one-by-one with generous timeouts if the race fails (common on mobile data)
+         */
+        const fallbackList = [...proxies];
+        if (isNative) fallbackList.unshift(targetUrl);
+
+        for (const proxy of fallbackList) {
+            try {
+                console.log(`[Fallback] Trying: ${proxy.slice(0, 40)}...`);
+                const result = await tryFetch(proxy, "Fallback");
+                console.log("[Fallback Success] Recovery Complete.");
+                return result;
+            } catch (err) {
+                console.warn(`[Fallback Fail] ${err.message}`);
+            }
         }
-        throw new Error("Headline communication failure. Please try again.");
+
+        const details = e.errors ? e.errors.map(err => err.message).join(' | ') : e.message;
+        throw new Error(`Global Fetch Failure: ${details}`);
     }
 }
 
@@ -1655,21 +1686,28 @@ function showLoading() {
 }
 
 function showError(msg, technicalDetails = null) {
+    // Requirements: Robust stack trace capture for remote debugging
+    let details = technicalDetails;
+    if (!details && window.event && window.event.error) {
+        details = window.event.error.stack || window.event.error.message;
+    }
+
     let html = `
         <div class="error-state">
             <div class="error-icon">⚠️</div>
             <h3>${msg}</h3>
             <div class="error-actions">
-                <button onclick="refreshNews()" class="text-btn primary" style="margin-top:15px">Try Again</button>
+                <button onclick="location.reload()" class="text-btn primary" style="margin-top:15px">Restart App</button>
+                <button onclick="refreshNews()" class="text-btn secondary">Retry Fetch</button>
             </div>
     `;
 
-    if (technicalDetails) {
+    if (details) {
         html += `
             <div class="technical-details">
                 <button class="details-toggle" onclick="this.nextElementSibling.classList.toggle('hidden')">Show Technical Details</button>
                 <div class="details-content hidden">
-                    <pre>${technicalDetails}</pre>
+                    <pre style="text-align:left; font-size:0.8rem; overflow-x:auto">${details}</pre>
                 </div>
             </div>
         `;
