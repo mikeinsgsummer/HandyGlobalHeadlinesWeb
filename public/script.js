@@ -1,3 +1,52 @@
+// Comprehensive Polyfills for Legacy Browsers (iOS < 14, older Chrome/FF)
+if (!Promise.any) {
+    Promise.any = function (promises) {
+        return new Promise((resolve, reject) => {
+            const errors = [];
+            let rejectedCount = 0;
+            const promiseArray = Array.from(promises);
+            if (promiseArray.length === 0) {
+                return reject(new (window.AggregateError || Error)(errors, "All promises were rejected"));
+            }
+            promiseArray.forEach((p, index) => {
+                Promise.resolve(p).then(resolve).catch(err => {
+                    errors[index] = err;
+                    rejectedCount++;
+                    if (rejectedCount === promiseArray.length) {
+                        reject(new (window.AggregateError || Error)(errors, "All promises were rejected"));
+                    }
+                });
+            });
+        });
+    };
+}
+
+// Array.prototype.flat Polyfill
+if (!Array.prototype.flat) {
+    Array.prototype.flat = function (depth = 1) {
+        return this.reduce((acc, val) =>
+            acc.concat(depth > 1 && Array.isArray(val) ? val.flat(depth - 1) : val),
+            []);
+    };
+}
+
+// Array.prototype.flatMap Polyfill
+if (!Array.prototype.flatMap) {
+    Array.prototype.flatMap = function (callback, thisArg) {
+        return this.map(callback, thisArg).flat();
+    };
+}
+
+// AggregateError Polyfill (Basic)
+if (!window.AggregateError) {
+    window.AggregateError = function (errors, message) {
+        const error = new Error(message);
+        error.name = 'AggregateError';
+        error.errors = errors;
+        return error;
+    };
+}
+
 const countrySelect = document.getElementById('country-select');
 const languageSelect = document.getElementById('language-select');
 const newsContainer = document.getElementById('news-container');
@@ -898,14 +947,20 @@ async function fetchFromRss(feed, timeout = 5000) {
         const xmlDoc = parser.parseFromString(xmlText, "text/xml");
         const items = Array.from(xmlDoc.querySelectorAll("item")).slice(0, 10);
 
-        return items.map(item => ({
-            title: item.querySelector("title").textContent.trim(),
-            link: item.querySelector("link").textContent,
-            pubDate: item.querySelector("pubDate") ? item.querySelector("pubDate").textContent : new Date().toISOString(),
-            source: feed.source
-        }));
+        return items.map(item => {
+            const titleEl = item.querySelector("title");
+            const linkEl = item.querySelector("link");
+            if (!titleEl || !linkEl) return null;
+
+            return {
+                title: titleEl.textContent.trim(),
+                link: linkEl.textContent.trim(),
+                pubDate: item.querySelector("pubDate") ? item.querySelector("pubDate").textContent : new Date().toISOString(),
+                source: feed.source
+            };
+        }).filter(a => !!a);
     } catch (e) {
-        console.error(`Feed ${feed.name} race failed:`, e);
+        console.error(`Feed ${feed.name} failed:`, e.message);
         throw e;
     }
 }
@@ -917,26 +972,30 @@ async function fetchFromRss(feed, timeout = 5000) {
 async function fetchRssRacing(targetUrl, timeout = 7000) {
     const isNative = window.Capacitor && window.Capacitor.isNativePlatform();
 
-    // Proxies definition
+    // Diversified Proxies for maximum cross-platform reliability
     const proxies = [
         `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
-        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`
+        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
+        `https://api.codetabs.com/v1/proxy?url=${encodeURIComponent(targetUrl)}`,
     ];
 
+    // Priority proxy for local development
     if (window.location.port === '8888') {
         proxies.unshift(`/.netlify/functions/proxy?url=${encodeURIComponent(targetUrl)}`);
     }
 
     const validateRss = (text) => {
-        if (!text || text.length < 500) throw new Error("Incomplete");
+        if (!text || text.length < 300) throw new Error("Incomplete");
         const trimmed = text.trim();
-        const isXml = trimmed.startsWith('<?xml') || trimmed.startsWith('<rss') || trimmed.startsWith('<feed');
+        const isXml = trimmed.startsWith('<?xml') || trimmed.startsWith('<rss') || trimmed.startsWith('<feed') || trimmed.includes('<channel>');
         if (!isXml) throw new Error("Not valid RSS/XML");
 
         const lowerText = text.toLowerCase();
         if (lowerText.includes('pardon our interruption') ||
             lowerText.includes('checking your browser') ||
-            lowerText.includes('access denied')) {
+            lowerText.includes('access denied') ||
+            lowerText.includes('bot detection') ||
+            lowerText.includes('security check')) {
             throw new Error("Bot detection");
         }
         return true;
@@ -944,26 +1003,27 @@ async function fetchRssRacing(targetUrl, timeout = 7000) {
 
     const tryFetch = async (url, label) => {
         try {
-            const text = await nativeFetch(url, { timeout: 6000 });
+            // Adaptive timeout based on source
+            const fetchTimeout = label === "Direct" ? 5000 : 8000;
+            const text = await nativeFetch(url, { timeout: fetchTimeout });
             validateRss(text);
-            console.log(`[Race Win] ${label}: ${url.slice(0, 40)}`);
+            console.log(`[Fetch Success] ${label}: ${url.slice(0, 45)}...`);
             return text;
         } catch (e) {
-            // Silence warning for racing to keep logs clean, only error if all fail
+            console.warn(`[Fetch Fail] ${label}: ${e.message}`);
             throw e;
         }
     };
 
-    // START ALL AT ONCE
-    const racingTasks = proxies.map(p => tryFetch(p, "Proxy"));
+    // Prepare racing tasks
+    const racingTasks = proxies.map((p, idx) => tryFetch(p, `Proxy-${idx}`));
     if (isNative) {
         racingTasks.push(tryFetch(targetUrl, "Direct"));
     }
 
     try {
-        const controller = new AbortController();
         const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Race Timeout")), timeout)
+            setTimeout(() => reject(new Error("Race Timeout")), timeout + 1000)
         );
 
         // Promise.any returns the FIRST successful result
@@ -972,8 +1032,12 @@ async function fetchRssRacing(targetUrl, timeout = 7000) {
             timeoutPromise
         ]);
     } catch (e) {
-        console.error("All racing paths failed for:", targetUrl);
-        throw new Error("All Fetching Paths Failed");
+        console.error("All fetch attempts failed for:", targetUrl);
+        // Provide more detailed diagnostic in console
+        if (e.errors) {
+            e.errors.forEach((err, i) => console.warn(`Error ${i}: ${err.message}`));
+        }
+        throw new Error("Headline communication failure. Please try again.");
     }
 }
 
@@ -1380,8 +1444,9 @@ async function fetchNews(countryCode, targetLang = 'original') {
             // Smart Client-side Filtering if interests are selected
             if (preferredInterests.length > 0) {
                 const filterTerms = preferredInterests.flatMap(i => {
-                    const k = INTEREST_KEYWORDS[i];
-                    return k.replace(/[()]/g, "").split(" OR ").map(t => t.replace(/"/g, "").toLowerCase().trim());
+                    const k = INTEREST_KEYWORDS[i] || [];
+                    // Ensure we handle the array of keywords correctly
+                    return k.map(t => t.toLowerCase().trim());
                 });
 
                 // If we have articles, filter them to ensure relevance
@@ -1431,7 +1496,7 @@ async function fetchNews(countryCode, targetLang = 'original') {
     }
 
     if (fetchError) {
-        showError(fetchError);
+        showError(fetchError, allArticles.length === 0 ? "Zero articles returned from racing engine." : null);
     }
 }
 
@@ -1589,8 +1654,29 @@ function showLoading() {
     newsContainer.innerHTML = '<div class="loading-state"><h3>Loading...</h3></div>';
 }
 
-function showError(msg) {
-    newsContainer.innerHTML = `<div class="error-state"><h3>${msg}</h3></div>`;
+function showError(msg, technicalDetails = null) {
+    let html = `
+        <div class="error-state">
+            <div class="error-icon">⚠️</div>
+            <h3>${msg}</h3>
+            <div class="error-actions">
+                <button onclick="refreshNews()" class="text-btn primary" style="margin-top:15px">Try Again</button>
+            </div>
+    `;
+
+    if (technicalDetails) {
+        html += `
+            <div class="technical-details">
+                <button class="details-toggle" onclick="this.nextElementSibling.classList.toggle('hidden')">Show Technical Details</button>
+                <div class="details-content hidden">
+                    <pre>${technicalDetails}</pre>
+                </div>
+            </div>
+        `;
+    }
+
+    html += `</div>`;
+    newsContainer.innerHTML = html;
 }
 
 function showEmpty(msg) {
