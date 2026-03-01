@@ -1,62 +1,3 @@
-// Comprehensive Polyfills for Legacy Browsers (iOS < 14, older Chrome/FF)
-if (!Promise.any) {
-    Promise.any = function (promises) {
-        return new Promise((resolve, reject) => {
-            const errors = [];
-            let rejectedCount = 0;
-            const promiseArray = Array.from(promises);
-            if (promiseArray.length === 0) {
-                return reject(new (window.AggregateError || Error)(errors, "All promises were rejected"));
-            }
-            promiseArray.forEach((p, index) => {
-                Promise.resolve(p).then(resolve).catch(err => {
-                    errors[index] = err;
-                    rejectedCount++;
-                    if (rejectedCount === promiseArray.length) {
-                        reject(new (window.AggregateError || Error)(errors, "All promises were rejected"));
-                    }
-                });
-            });
-        });
-    };
-}
-
-if (!Array.prototype.flat) {
-    Array.prototype.flat = function (depth = 1) {
-        return this.reduce((acc, val) =>
-            acc.concat(depth > 1 && Array.isArray(val) ? val.flat(depth - 1) : val),
-            []);
-    };
-}
-
-if (!Array.prototype.flatMap) {
-    Array.prototype.flatMap = function (callback, thisArg) {
-        return this.map(callback, thisArg).flat();
-    };
-}
-
-if (!window.AggregateError) {
-    window.AggregateError = function (errors, message) {
-        const error = new Error(message);
-        error.name = 'AggregateError';
-        error.errors = errors;
-        return error;
-    };
-}
-
-/**
- * Requirement: Prevent app-wide crashes on storage corruption.
- */
-function safeParse(key, fallback) {
-    try {
-        const val = localStorage.getItem(key);
-        return val ? JSON.parse(val) : fallback;
-    } catch (e) {
-        console.warn(`[Storage] SafeParse failed for ${key}, using fallback.`, e.message);
-        return fallback;
-    }
-}
-
 const countrySelect = document.getElementById('country-select');
 const languageSelect = document.getElementById('language-select');
 const newsContainer = document.getElementById('news-container');
@@ -121,29 +62,99 @@ const COUNTRY_LANGUAGES = {
 };
 
 const COUNTRY_NAMES = {}; // Map code -> name for Bing search
+const COUNTRY_NATIVE_NAMES = {}; // Map code -> native name for original language search
 
 // Reader and Offline variables
 let currentArticle = null;
 let readerFontSize = parseInt(localStorage.getItem('readerFontSize')) || 18;
 let readerDarkMode = localStorage.getItem('readerDarkMode') === 'true';
 let isReaderMode = true;
-let savedArticles = safeParse('savedArticles', []);
-let bookmarkedArticles = safeParse('bookmarkedArticles', []);
-let preferredSources = safeParse('preferredSources', ['google']);
-let preferredInterests = safeParse('preferredInterests', []);
+let savedArticles = JSON.parse(localStorage.getItem('savedArticles')) || [];
+let bookmarkedArticles = JSON.parse(localStorage.getItem('bookmarkedArticles')) || [];
+let preferredSources = JSON.parse(localStorage.getItem('preferredSources')) || ['google'];
+let preferredInterests = JSON.parse(localStorage.getItem('preferredInterests')) || [];
 let openInExternalSafari = localStorage.getItem('openInExternalSafari') === 'true';
 let allArticlesList = []; // Store fetched headlines for filtering
 let currentActiveInterest = 'all';
 
 // Interest keywords mapping (shared for fetching and local filtering)
-const INTEREST_KEYWORDS = {
-    'politics': ['politics', 'society', 'environment', 'government', 'policy', 'climate', 'global warming', 'voters', 'election', 'protest', 'activism'],
-    'finance': ['finance', 'economy', 'trade', 'stock', 'business', 'banking', 'markets', 'economic', 'trading', 'commerce', 'inflation', 'interest rates'],
-    'sports': ['sports', 'entertainment', 'arts', 'movies', 'music', 'celebrity', 'fashion', 'theater', 'gallery', 'museum', 'concert', 'film', 'actor', 'singer'],
-    'technology': ['technology', 'science', 'academics', 'research', 'innovation', 'space', 'ai', 'university', 'study', 'education', 'engineering', 'tech', 'robot'],
-    'health': ['health', 'medical', 'food', 'nutrition', 'wellness', 'medicine', 'disease', 'hospital', 'doctor', 'diet', 'recipe', 'fitness', 'workout'],
-    'travel': ['travel', 'leisure', 'tourism', 'vacation', 'airlines', 'hospitality', 'hobbies', 'photography', 'craft', 'collection', 'outdoors', 'camping']
+// Interest profiles for smart scoring
+const INTEREST_PROFILES = {
+    'politics': {
+        strong: ['politics', 'government', 'election', 'voters', 'parliament', 'congress', 'senate', 'minister', 'president', 'diplomacy', 'treaty', 'sanctions', 'democracy', 'regime', 'summit', 'administration', 'legislation', 'bill', 'policy', 'protest', 'activism'],
+        weak: ['society', 'environment', 'climate', 'global warming', 'lawsuit', 'court', 'legal', 'human rights', 'conflict', 'war', 'peace', 'public', 'affairs'],
+        negative: []
+    },
+    'finance': {
+        strong: ['finance', 'economy', 'stock', 'banking', 'markets', 'inflation', 'interest rates', 'crypto', 'bitcoin', 'investment', 'investor', 'startup', 'earnings', 'revenue', 'profit', 'gdp', 'debt', 'fiscal', 'monetary', 'recession', 'bubble', 'ceo', 'corporation'],
+        weak: ['trade', 'business', 'economic', 'trading', 'commerce', 'bank', 'company', 'industry', 'market', 'price', 'cost'],
+        negative: []
+    },
+    'sports': {
+        strong: ['olympics', 'football', 'soccer', 'basketball', 'tennis', 'tournament', 'championship', 'hollywood', 'netflix', 'disney', 'oscars', 'grammys', 'celebrity', 'actor', 'singer'],
+        weak: ['sports', 'entertainment', 'arts', 'movies', 'music', 'fashion', 'theater', 'gallery', 'museum', 'concert', 'film', 'game', 'match', 'pop', 'rock', 'culture', 'awards'],
+        negative: []
+    },
+    'technology': {
+        strong: ['ai', 'robotics', 'software', 'hardware', 'coding', 'programming', 'cyber', 'chip', 'semiconductor', 'nasa', 'astronomy', 'physics', 'quantum', 'biotech', 'innovation'],
+        weak: ['technology', 'science', 'academics', 'research', 'university', 'study', 'education', 'engineering', 'tech', 'robot', 'internet', 'web', 'data', 'cloud', 'security', 'privacy', 'biology', 'chemistry', 'scientific'],
+        negative: ['parliament', 'legislation', 'election', 'voted', 'protest', 'activism', 'minister', 'diplomacy']
+    },
+    'health': {
+        strong: ['medical', 'wellness', 'medicine', 'disease', 'hospital', 'doctor', 'virus', 'pandemic', 'vaccine', 'drug', 'treatment', 'cancer', 'surgery', 'clinic', 'nurse', 'mental', 'psychology'],
+        weak: ['health', 'food', 'nutrition', 'diet', 'recipe', 'fitness', 'workout', 'nutritionist', 'organic', 'vegan', 'cooking', 'chef', 'restaurant', 'culinary'],
+        negative: []
+    },
+    'travel': {
+        strong: ['tourism', 'vacation', 'airlines', 'hospitality', 'destination', 'resort', 'hiking', 'backpacker', 'passport', 'visa'],
+        weak: ['travel', 'leisure', 'hobbies', 'photography', 'craft', 'collection', 'outdoors', 'camping', 'hotel', 'flight', 'beach', 'mountain', 'adventure', 'guide', 'museum', 'sightseeing', 'cruise', 'lifestyle', 'gardening', 'fishing', 'hunting'],
+        negative: []
+    }
 };
+
+/**
+ * Smart matching logic with scoring and penalties.
+ */
+function isMatchForInterest(article, interestKey) {
+    const profile = INTEREST_PROFILES[interestKey];
+    if (!profile) return false;
+
+    const content = (article.title + " " + (article.description || "")).toLowerCase();
+    let score = 0;
+
+    // Strong matches = 2 points
+    profile.strong.forEach(kw => {
+        if (content.includes(kw.toLowerCase())) score += 2;
+    });
+
+    // Weak matches = 1 point
+    profile.weak.forEach(kw => {
+        if (content.includes(kw.toLowerCase())) score += 1;
+    });
+
+    // Negative penalties = -3 points
+    profile.negative.forEach(kw => {
+        if (content.includes(kw.toLowerCase())) score -= 3;
+    });
+
+    // Threshold = 2 points (must have 1 strong or 2 weak matches)
+    return score >= 2;
+}
+
+/**
+ * Helper to convert array keywords to a search query string.
+ */
+function getInterestQueryString(interests) {
+    if (!interests || interests.length === 0) return "";
+    const terms = interests.map(i => {
+        const profile = INTEREST_PROFILES[i];
+        if (!profile) return "";
+        // Combine all keywords for API search query
+        const allKeywords = [...profile.strong, ...profile.weak];
+        return `(${allKeywords.map(word => `"${word}"`).join(" OR ")})`;
+    }).filter(q => q !== "");
+    return terms.length > 0 ? " " + terms.join(" OR ") : "";
+}
 
 // Interest icons mapping (Set 1 preferred)
 const INTEREST_ICONS = {
@@ -804,6 +815,14 @@ async function fetchCountries() {
             const name = country.name.common;
             COUNTRY_NAMES[code] = name;
 
+            // Extract native name
+            if (country.name.nativeName) {
+                const nativeNames = Object.values(country.name.nativeName);
+                if (nativeNames.length > 0) {
+                    COUNTRY_NATIVE_NAMES[code] = nativeNames[0].common;
+                }
+            }
+
             const option = document.createElement('option');
             option.value = code;
             option.textContent = name;
@@ -877,7 +896,9 @@ function getProxyUrl(targetUrl) {
     }
 
     // Default to the most reliable public proxy for web/native fallback
-    return `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
+    const baseUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
+    // Double cache bust: internal timestamp and a unique fragment
+    return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}_cb=${Date.now()}#${Math.random().toString(36).substring(7)}`;
 }
 
 async function fetchWithTimeout(resource, options = {}) {
@@ -957,20 +978,15 @@ async function fetchFromRss(feed, timeout = 5000) {
         const xmlDoc = parser.parseFromString(xmlText, "text/xml");
         const items = Array.from(xmlDoc.querySelectorAll("item")).slice(0, 10);
 
-        return items.map(item => {
-            const titleEl = item.querySelector("title");
-            const linkEl = item.querySelector("link");
-            if (!titleEl || !linkEl) return null;
-
-            return {
-                title: titleEl.textContent.trim(),
-                link: linkEl.textContent.trim(),
-                pubDate: item.querySelector("pubDate") ? item.querySelector("pubDate").textContent : new Date().toISOString(),
-                source: feed.source
-            };
-        }).filter(a => !!a);
+        return items.map(item => ({
+            title: item.querySelector("title").textContent.trim(),
+            link: item.querySelector("link").textContent,
+            pubDate: item.querySelector("pubDate") ? item.querySelector("pubDate").textContent : new Date().toISOString(),
+            description: (item.querySelector("description") ? item.querySelector("description").textContent : "") + (item.querySelector("content\\:encoded") ? item.querySelector("content\\:encoded").textContent : ""),
+            source: feed.source
+        }));
     } catch (e) {
-        console.error(`Feed ${feed.name} failed:`, e.message);
+        console.error(`Feed ${feed.name} race failed:`, e);
         throw e;
     }
 }
@@ -980,18 +996,12 @@ async function fetchFromRss(feed, timeout = 5000) {
  * Uses CapacitorHttp if available to bypass CORS in native app.
  */
 async function fetchRssRacing(targetUrl, timeout = 7000) {
-    console.log(`[Fetch Start] Targeting: ${targetUrl.slice(0, 60)}...`);
     const isNative = window.Capacitor && window.Capacitor.isNativePlatform();
 
-    // 1. AllOrigins JSON endpoint (often more reliable than /raw for CORS)
-    const allOriginsJson = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
-
-    // Primary Racing Selection
+    // Proxies definition
     const proxies = [
-        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
         `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
-        `https://api.codetabs.com/v1/proxy?url=${encodeURIComponent(targetUrl)}`,
-        allOriginsJson
+        `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`
     ];
 
     if (window.location.port === '8888') {
@@ -999,89 +1009,72 @@ async function fetchRssRacing(targetUrl, timeout = 7000) {
     }
 
     const validateRss = (text) => {
-        if (!text || text.length < 200) throw new Error("Empty or trivial response");
+        if (!text || text.length < 500) throw new Error("Incomplete");
         const trimmed = text.trim();
-        // Be permissive with leading whitespace/BOM for mobile networks
-        const isXml = /^\s*(?:<\?xml|<rss|<feed|<channel)/i.test(trimmed);
-        if (!isXml) throw new Error("Format is not valid XML/RSS");
+        const isXml = trimmed.startsWith('<?xml') || trimmed.startsWith('<rss') || trimmed.startsWith('<feed');
+        if (!isXml) throw new Error("Not valid RSS/XML");
 
         const lowerText = text.toLowerCase();
-        const blockers = ['pardon our interruption', 'checking your browser', 'access denied', 'bot detection', 'security check'];
-        if (blockers.some(b => lowerText.includes(b))) {
-            throw new Error(`Cloudflare/Bot blocker: ${blockers.find(b => lowerText.includes(b))}`);
+        if (lowerText.includes('pardon our interruption') ||
+            lowerText.includes('checking your browser') ||
+            lowerText.includes('access denied')) {
+            throw new Error("Bot detection");
         }
         return true;
     };
 
     const tryFetch = async (url, label) => {
         try {
-            const fetchTimeout = label === "Direct" ? 6000 : 9000;
-            let responseText = await nativeFetch(url, { timeout: fetchTimeout });
-
-            // Handle AllOrigins JSON wrapper if necessary
-            if (url.includes('allorigins.win/get')) {
-                const json = JSON.parse(responseText);
-                responseText = json.contents;
-            }
-
-            validateRss(responseText);
-            return responseText;
+            const text = await nativeFetch(url, { timeout: 6000 });
+            validateRss(text);
+            console.log(`[Race Win] ${label}: ${url.slice(0, 40)}`);
+            return text;
         } catch (e) {
-            throw new Error(`[${label}] ${e.message}`);
+            // Silence warning for racing to keep logs clean, only error if all fail
+            throw e;
         }
     };
 
-    /**
-     * STAGE 1: THE RACE (Speed Optimized)
-     */
-    const racingTasks = proxies.map((p, idx) => tryFetch(p, `Proxy-${idx}`));
-    if (isNative) racingTasks.push(tryFetch(targetUrl, "Direct"));
+    // START ALL AT ONCE
+    const racingTasks = proxies.map(p => tryFetch(p, "Proxy"));
+    if (isNative) {
+        racingTasks.push(tryFetch(targetUrl, "Direct"));
+    }
 
     try {
+        const controller = new AbortController();
         const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Race Timeout")), timeout + 2000)
+            setTimeout(() => reject(new Error("Race Timeout")), timeout)
         );
 
+        // Promise.any returns the FIRST successful result
         return await Promise.race([
             Promise.any(racingTasks),
             timeoutPromise
         ]);
     } catch (e) {
-        console.warn("[Race Failed] Entering Sequential Fallback Mode...", e.message);
-
-        /**
-         * STAGE 2: SEQUENTIAL FALLBACK (Reliability Optimized)
-         * Try one-by-one with generous timeouts if the race fails (common on mobile data)
-         */
-        const fallbackList = [...proxies];
-        if (isNative) fallbackList.unshift(targetUrl);
-
-        for (const proxy of fallbackList) {
-            try {
-                console.log(`[Fallback] Trying: ${proxy.slice(0, 40)}...`);
-                const result = await tryFetch(proxy, "Fallback");
-                console.log("[Fallback Success] Recovery Complete.");
-                return result;
-            } catch (err) {
-                console.warn(`[Fallback Fail] ${err.message}`);
-            }
-        }
-
-        const details = e.errors ? e.errors.map(err => err.message).join(' | ') : e.message;
-        throw new Error(`Global Fetch Failure: ${details}`);
+        console.error("All racing paths failed for:", targetUrl);
+        throw new Error("All Fetching Paths Failed");
     }
 }
 
 /**
  * Races high-priority global feeds to get the fastest reliable news.
  */
-async function fetchGlobalNews() {
-    console.log("Racing high-priority global feeds...");
+async function fetchGlobalNews(interestQuery = "", freshness = DEFAULT_FRESHNESS) {
+    console.log(`Racing high-priority global feeds (${freshness}) with interests:`, interestQuery);
+
+    const feeds = [
+        { name: 'Associated Press', url: `https://news.google.com/rss/search?q=${encodeURIComponent(interestQuery + " site:apnews.com")}&hl=en&gl=US&ceid=US:en&tbs=qdr:${freshness}`, source: 'AP News' },
+        { name: 'The Guardian', url: `https://news.google.com/rss/search?q=${encodeURIComponent(interestQuery + " site:theguardian.com")}&hl=en&gl=US&ceid=US:en&tbs=qdr:${freshness}`, source: 'The Guardian' },
+        { name: 'BBC World', url: `https://news.google.com/rss/search?q=${encodeURIComponent(interestQuery + " site:bbc.com")}&hl=en&gl=US&ceid=US:en&tbs=qdr:${freshness}`, source: 'BBC News' }
+    ];
+
     try {
-        // Try to get at least one successful feed within 6 seconds
-        return await Promise.any(HIGH_PRIORITY_FEEDS.map(feed => fetchFromRss(feed, 6000)));
+        // Try all concurrently, Promise.any returns the FIRST success
+        return await Promise.any(feeds.map(feed => fetchFromRss(feed, 7000)));
     } catch (error) {
-        console.error("All high-priority feeds failed:", error);
+        console.error("All high-priority global feeds failed:", error);
         throw error;
     }
 }
@@ -1234,27 +1227,32 @@ async function fetchArticleHTML(targetUrl, depth = 0) {
     }
 }
 
-async function fetchBingNews(countryCode) {
+const DEFAULT_FRESHNESS = 'd'; // 'd' = 24h, 'w' = 7d
+
+async function fetchBingNews(countryCode, interestQuery = "", freshness = DEFAULT_FRESHNESS) {
     try {
-        const countryName = COUNTRY_NAMES[countryCode] || countryCode;
+        const isOriginal = languageSelect.value === 'original';
+        const countryName = (isOriginal && COUNTRY_NATIVE_NAMES[countryCode]) ? COUNTRY_NATIVE_NAMES[countryCode] : (COUNTRY_NAMES[countryCode] || countryCode);
         const cc = countryCode.toUpperCase();
         const info = COUNTRY_LANGUAGES[countryCode];
         const hl = (info && info.lang) || 'en';
 
-        // Refined Bing Search with localization parameters
-        const rssUrl = `https://www.bing.com/news/search?q=${encodeURIComponent(countryName)}+news&format=rss&cc=${cc}&setlang=${hl}&qs=n&form=NTYA&count=20`;
+        // interval:1 = 24h, interval:4 = 7d
+        const interval = (freshness === 'w') ? '4' : '1';
+        const rssUrl = `https://www.bing.com/news/search?q=${encodeURIComponent(countryName)}${encodeURIComponent(interestQuery)}+news&format=rss&cc=${cc}&setlang=${hl}&qs=n&form=NTYA&count=20&qft=interval%3a${interval}`;
 
         const xmlText = await fetchRssRacing(rssUrl, 7000);
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(xmlText, "text/xml");
 
-        const items = Array.from(xmlDoc.querySelectorAll("item")).slice(0, 10);
+        const items = Array.from(xmlDoc.querySelectorAll("item")).slice(0, 15);
         if (items.length === 0) throw new Error("Bing returned zero results");
 
         return items.map(item => ({
             title: item.querySelector("title").textContent,
             link: item.querySelector("link").textContent,
             pubDate: item.querySelector("pubDate") ? item.querySelector("pubDate").textContent : new Date().toISOString(),
+            description: item.querySelector("description") ? item.querySelector("description").textContent : "",
             source: 'Bing News'
         }));
     } catch (error) {
@@ -1271,17 +1269,18 @@ async function fetchBingNews(countryCode) {
     }
 }
 
-async function fetchBBCNews(countryCode) {
+async function fetchBBCNews(countryCode, interestQuery = "", freshness = DEFAULT_FRESHNESS) {
     const countryName = COUNTRY_NAMES[countryCode] || countryCode;
     const isUK = countryCode.toLowerCase() === 'gb';
 
     // Tier 1: Localized Search (Use Google for Speed)
     if (!isUK) {
         try {
-            console.log(`[BBC Tier 1] Attempting localized Google search for: ${countryName}`);
-            const rssUrl = `https://news.google.com/rss/search?q=site:bbc.com+${encodeURIComponent(countryName)}+news&hl=en&gl=${countryCode.toUpperCase()}&ceid=${countryCode.toUpperCase()}:en`;
+            console.log(`[BBC Tier 1] Attempting localized Google search for: ${countryName} ${interestQuery}`);
+            const query = `${encodeURIComponent(countryName)}${encodeURIComponent(interestQuery)}+site:bbc.com`;
+            const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=en&gl=${countryCode.toUpperCase()}&ceid=${countryCode.toUpperCase()}:en&tbs=qdr:${freshness}`;
             const articles = await fetchFromRss({ name: 'BBC Search', url: rssUrl, source: 'BBC News' }, 4000);
-            if (articles && articles.length > 3) return articles; // Expect at least 4 articles for a "good" localized result
+            if (articles && articles.length > 3) return articles;
         } catch (e) {
             console.warn(`[BBC Tier 1 Fail] Localized search failed for ${countryName}: ${e.message}`);
         }
@@ -1329,13 +1328,14 @@ async function fetchBBCNews(countryCode) {
     }
 }
 
-async function fetchReutersNews(countryCode) {
+async function fetchReutersNews(countryCode, interestQuery = "", freshness = DEFAULT_FRESHNESS) {
     const countryName = COUNTRY_NAMES[countryCode] || countryCode;
 
     // Tier 1: Localized Search (Use Google for Speed)
     try {
-        console.log(`[Reuters Tier 1] Attempting localized Google search for: ${countryName}`);
-        const rssUrl = `https://news.google.com/rss/search?q=site:reuters.com+${encodeURIComponent(countryName)}+news&hl=en&gl=${countryCode.toUpperCase()}&ceid=${countryCode.toUpperCase()}:en`;
+        console.log(`[Reuters Tier 1] Attempting localized Google search for: ${countryName} ${interestQuery}`);
+        const query = `${encodeURIComponent(countryName)}${encodeURIComponent(interestQuery)}+site:reuters.com`;
+        const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=en&gl=${countryCode.toUpperCase()}&ceid=${countryCode.toUpperCase()}:en&tbs=qdr:${freshness}`;
         const articles = await fetchFromRss({ name: 'Reuters Search', url: rssUrl, source: 'Reuters News' }, 4000);
         if (articles && articles.length > 3) return articles;
     } catch (e) {
@@ -1422,78 +1422,76 @@ async function fetchNews(countryCode, targetLang = 'original') {
     let allArticles = [];
     let fetchError = null;
 
-    // Interest keywords mapping already defined globally (lines 80-87)
-
     try {
         if (!countryCode) {
-            allArticles = await fetchGlobalNews();
+            const interestQuery = getInterestQueryString(preferredInterests);
+            allArticles = await fetchGlobalNews(interestQuery);
         } else {
             const countryName = COUNTRY_NAMES[countryCode] || countryCode;
-            let interestQuery = "";
 
-            if (preferredInterests.length > 0) {
-                const keywords = preferredInterests.map(i => {
-                    const terms = INTEREST_KEYWORDS[i] || [];
-                    return terms.length > 0 ? `(${terms.join(" OR ")})` : "";
-                }).filter(k => !!k);
-                if (keywords.length > 0) {
-                    interestQuery = " " + keywords.join(" OR ");
-                }
-            }
+            // Fetch for each interest individually to avoid starvation
+            // If no interests selected, treat as one empty interest fetch
+            const interestsToFetch = preferredInterests.length > 0 ? preferredInterests : [""];
+            const allInterestPromises = interestsToFetch.map(async (interestKey) => {
+                const interestQuery = interestKey ? getInterestQueryString([interestKey]) : "";
 
-            const fetchPromises = preferredSources.map(async (source) => {
-                try {
-                    if (source === 'bing') {
-                        // Bing doesn't support complex OR at standard search as easily in basic API
-                        // but we append the interests for better relevance
-                        return await fetchBingNews(countryCode, interestQuery);
-                    } else if (source === 'bbc') {
-                        // BBC is RSS based, harder to search but we can filter results
-                        return await fetchBBCNews(countryCode);
-                    } else if (source === 'google') {
-                        const info = COUNTRY_LANGUAGES[countryCode];
-                        if (info) {
-                            const cc = countryCode.toUpperCase();
-                            let hl = info.lang || 'en';
-                            let ceid = `${cc}:${hl}`;
-                            const query = `${encodeURIComponent(countryName)}${encodeURIComponent(interestQuery)}`;
-                            const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=${hl}&gl=${cc}&ceid=${ceid}`;
-                            return await fetchFromRss({ name: 'Google News', url: rssUrl, source: 'Google News' }, 6000);
-                        }
-                    } else if (source === 'reuters') {
-                        return await fetchReutersNews(countryCode);
-                    }
-                } catch (e) {
-                    console.warn(`Source ${source} failed:`, e);
+                // Adaptive freshness: Try 24h ('d') first, then 7d ('w')
+                for (let freshness of ['d', 'w']) {
+                    const fetchPromises = preferredSources.map(async (source) => {
+                        try {
+                            if (source === 'bing') return await fetchBingNews(countryCode, interestQuery, freshness);
+                            if (source === 'bbc') return await fetchBBCNews(countryCode, interestQuery, freshness);
+                            if (source === 'reuters') return await fetchReutersNews(countryCode, interestQuery, freshness);
+                            if (source === 'google') {
+                                const info = COUNTRY_LANGUAGES[countryCode];
+                                if (!info) return [];
+                                const cc = countryCode.toUpperCase();
+                                let hl = info.lang || 'en', ceid = `${cc}:${hl}`;
+                                const isOriginal = targetLang === 'original';
+                                const searchName = (isOriginal && COUNTRY_NATIVE_NAMES[countryCode]) ? COUNTRY_NATIVE_NAMES[countryCode] : countryName;
+                                const query = `${encodeURIComponent(searchName)}${encodeURIComponent(interestQuery)}`;
+                                const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=${hl}&gl=${cc}&ceid=${ceid}&tbs=qdr:${freshness}`;
+                                return await fetchFromRss({ name: 'Google News', url: rssUrl, source: 'Google News' }, 5000);
+                            }
+                        } catch (e) { return []; }
+                        return [];
+                    });
+
+                    const results = await Promise.all(fetchPromises);
+                    const flattened = results.flat();
+                    if (flattened.length > 0) return flattened; // Found something for this interest!
                 }
                 return [];
             });
 
-            const results = await Promise.all(fetchPromises);
-            allArticles = results.flat();
+            const allResults = await Promise.all(allInterestPromises);
+            allArticles = allResults.flat();
+
+            // Deduplicate by link
+            const seen = new Set();
+            allArticles = allArticles.filter(art => {
+                if (seen.has(art.link)) return false;
+                seen.add(art.link);
+                return true;
+            });
 
             // Smart Client-side Filtering if interests are selected
             if (preferredInterests.length > 0) {
-                const filterTerms = preferredInterests.flatMap(i => {
-                    const k = INTEREST_KEYWORDS[i] || [];
-                    // Ensure we handle the array of keywords correctly
-                    return k.map(t => t.toLowerCase().trim());
+                allArticles = allArticles.filter(art => {
+                    return preferredInterests.some(interestKey => isMatchForInterest(art, interestKey));
                 });
-
-                // If we have articles, filter them to ensure relevance
-                // but only if we have enough results. If results are sparse, don't over-filter.
-                if (allArticles.length > 10) {
-                    allArticles = allArticles.filter(art => {
-                        const content = (art.title + " " + (art.description || "")).toLowerCase();
-                        return filterTerms.some(term => content.includes(term));
-                    });
-                }
             }
 
-            // Final fallback to global if nothing worked
             if (allArticles.length === 0) {
-                console.warn("All selected sources/interests failed, falling back to Global Racing...");
-                allArticles = await fetchGlobalNews();
+                console.warn("All sources/interests failed, falling back to Global Racing...");
+                // Global fallback also with adaptive freshness
+                for (let freshness of ['d', 'w']) {
+                    try {
+                        const interestQuery = getInterestQueryString(preferredInterests);
+                        allArticles = await fetchGlobalNews(interestQuery, freshness);
+                        if (allArticles.length > 0) break;
+                    } catch (e) { }
+                }
             }
         }
 
@@ -1510,8 +1508,20 @@ async function fetchNews(countryCode, targetLang = 'original') {
                     return { ...art, title: tTitle };
                 }));
             } else if (countryLang !== 'en' && countryCode) {
+                // If "Original Language" is selected for a non-English country, 
+                // translate headlines from English-only sources to the local language.
                 allArticles = await Promise.all(allArticles.map(async (art) => {
-                    if (art.source === 'Bing News' || art.source === 'BBC News' || art.source === 'AP News' || art.source === 'The Guardian') {
+                    const src = art.source.toUpperCase();
+                    const isEnglishSource = src.includes('BBC') || src.includes('REUTERS') ||
+                        src.includes('AP NEWS') || src.includes('GUARDIAN') ||
+                        src.includes('BING') || src.includes('GOOGLE');
+
+                    // Note: Google/Bing might return local headlines if searched in local lang,
+                    // but we check if the headline actually contains non-English chars if we wanted to be super smart.
+                    // For now, if it's "Original" and country is non-English, we ensure headline matches country language.
+                    const needsTranslation = isEnglishSource;
+
+                    if (needsTranslation) {
                         const tTitle = await translateText(art.title, countryLang);
                         return { ...art, title: tTitle };
                     }
@@ -1527,7 +1537,7 @@ async function fetchNews(countryCode, targetLang = 'original') {
     }
 
     if (fetchError) {
-        showError(fetchError, allArticles.length === 0 ? "Zero articles returned from racing engine." : null);
+        showError(fetchError);
     }
 }
 
@@ -1544,6 +1554,11 @@ function updateInterestMenu() {
     const menu = document.getElementById('interest-menu');
     if (!menu) return;
 
+    if (preferredInterests.length === 0) {
+        menu.classList.add('hidden');
+        return;
+    }
+
     menu.classList.remove('hidden');
     menu.innerHTML = '';
 
@@ -1555,9 +1570,7 @@ function updateInterestMenu() {
     allTab.onclick = () => filterNewsByInterest('all');
     menu.appendChild(allTab);
 
-    const displayInterests = preferredInterests.length > 0 ? preferredInterests : Object.keys(INTEREST_KEYWORDS);
-
-    displayInterests.forEach(interest => {
+    preferredInterests.forEach(interest => {
         const tab = document.createElement('div');
         tab.className = `interest-tab ${currentActiveInterest === interest ? 'active' : ''}`;
         tab.textContent = INTEREST_ICONS[interest] || interest;
@@ -1583,11 +1596,7 @@ function filterNewsByInterest(interest) {
 
     let filtered = baseList;
     if (interest !== 'all') {
-        const keywords = INTEREST_KEYWORDS[interest] || [];
-        filtered = baseList.filter(art => {
-            const content = (art.title + " " + (art.description || "")).toLowerCase();
-            return keywords.some(kw => content.includes(kw.toLowerCase()));
-        });
+        filtered = baseList.filter(art => isMatchForInterest(art, interest));
     }
 
     if (viewType === 'bookmarks') {
@@ -1685,36 +1694,8 @@ function showLoading() {
     newsContainer.innerHTML = '<div class="loading-state"><h3>Loading...</h3></div>';
 }
 
-function showError(msg, technicalDetails = null) {
-    // Requirements: Robust stack trace capture for remote debugging
-    let details = technicalDetails;
-    if (!details && window.event && window.event.error) {
-        details = window.event.error.stack || window.event.error.message;
-    }
-
-    let html = `
-        <div class="error-state">
-            <div class="error-icon">⚠️</div>
-            <h3>${msg}</h3>
-            <div class="error-actions">
-                <button onclick="location.reload()" class="text-btn primary" style="margin-top:15px">Restart App</button>
-                <button onclick="refreshNews()" class="text-btn secondary">Retry Fetch</button>
-            </div>
-    `;
-
-    if (details) {
-        html += `
-            <div class="technical-details">
-                <button class="details-toggle" onclick="this.nextElementSibling.classList.toggle('hidden')">Show Technical Details</button>
-                <div class="details-content hidden">
-                    <pre style="text-align:left; font-size:0.8rem; overflow-x:auto">${details}</pre>
-                </div>
-            </div>
-        `;
-    }
-
-    html += `</div>`;
-    newsContainer.innerHTML = html;
+function showError(msg) {
+    newsContainer.innerHTML = `<div class="error-state"><h3>${msg}</h3></div>`;
 }
 
 function showEmpty(msg) {
