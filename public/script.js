@@ -71,7 +71,7 @@ let readerDarkMode = localStorage.getItem('readerDarkMode') === 'true';
 let isReaderMode = true;
 let savedArticles = JSON.parse(localStorage.getItem('savedArticles')) || [];
 let bookmarkedArticles = JSON.parse(localStorage.getItem('bookmarkedArticles')) || [];
-let preferredSources = JSON.parse(localStorage.getItem('preferredSources')) || ['google'];
+let preferredSources = ['google', 'bing', 'bbc', 'reuters'];
 let preferredInterests = JSON.parse(localStorage.getItem('preferredInterests')) || [];
 let openInExternalSafari = localStorage.getItem('openInExternalSafari') === 'true';
 let allArticlesList = []; // Store fetched headlines for filtering
@@ -616,6 +616,28 @@ function deleteAllSavedArticles() {
     showSavedArticles();
 }
 
+function createActionBanner(title, showDeleteAll, deleteAction) {
+    const banner = document.createElement('div');
+    banner.className = 'info-banner saved-header';
+
+    const deleteAllHtml = showDeleteAll ?
+        `<button onclick="${deleteAction}" class="icon-btn-text delete-all" title="Clear All">🗑️ Clear All</button>` : '';
+
+    banner.innerHTML = `
+        <div class="banner-left">
+            <button onclick="refreshNews()" class="icon-btn-text">← Home</button>
+        </div>
+        <div class="banner-title">${title}</div>
+        <div class="banner-right">
+            <button onclick="updateFontSize(-2)" class="icon-btn-text" title="Decrease Font">A-</button>
+            <button onclick="updateFontSize(2)" class="icon-btn-text" title="Increase Font">A+</button>
+            <button onclick="toggleDarkMode()" class="icon-btn-text" title="Toggle Theme">🌓</button>
+            ${deleteAllHtml}
+        </div>
+    `;
+    return banner;
+}
+
 function showSavedArticles(articlesOrEvent = savedArticles) {
     // Check if called from an event listener
     let articles = articlesOrEvent;
@@ -630,33 +652,14 @@ function showSavedArticles(articlesOrEvent = savedArticles) {
 
     if (articles.length === 0) {
         showEmpty(articles === savedArticles ? "You haven't saved any articles yet." : "No matching saved articles found.");
-        // Add a back button even if empty
-        const backBanner = document.createElement('div');
-        backBanner.className = 'info-banner saved-header';
-        backBanner.innerHTML = `
-            <div class="banner-left">
-                <button onclick="refreshNews()" class="icon-btn-text">← Back to Home</button>
-            </div>
-            <div class="banner-title">Saved Articles</div>
-        `;
+        const backBanner = createActionBanner('📥', false);
         newsContainer.prepend(backBanner);
         return;
     }
 
     renderNews(articles.map(a => ({ ...a, source: 'Saved: ' + a.source })), true, false, true);
 
-    // Add a banner with Delete All option
-    const backBanner = document.createElement('div');
-    backBanner.className = 'info-banner saved-header';
-    backBanner.innerHTML = `
-            <div class="banner-left">
-                <button onclick="refreshNews()" class="icon-btn-text">← Back to Home</button>
-            </div>
-            <div class="banner-title">Saved Articles</div>
-            <div class="banner-right">
-                <button onclick="deleteAllSavedArticles()" class="icon-btn-text delete-all" title="Delete All">🗑️ Clear All</button>
-            </div>
-        `;
+    const backBanner = createActionBanner('📥', true, 'deleteAllSavedArticles()');
     newsContainer.prepend(backBanner);
 }
 
@@ -668,12 +671,7 @@ function toggleBookmark(article, event) {
         bookmarkedArticles.splice(index, 1);
         console.log("Removed from bookmarks");
     } else {
-        bookmarkedArticles.push({
-            title: article.title,
-            link: article.link,
-            pubDate: article.pubDate,
-            source: article.source
-        });
+        bookmarkedArticles.push({ ...article });
         console.log("Added to bookmarks");
     }
 
@@ -709,33 +707,18 @@ function showBookmarks(articlesOrEvent = bookmarkedArticles) {
     document.body.classList.remove('saved-view-active');
     document.body.classList.add('bookmarks-view-active');
 
+    const bookmarkTitle = `<svg viewBox="0 0 24 24" fill="currentColor" style="width:1.2rem; height:1.2rem; display:inline-block; vertical-align:middle; color:#facc15;"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>`;
+
     if (articles.length === 0) {
         showEmpty(articles === bookmarkedArticles ? "You haven't bookmarked any headlines yet." : "No matching bookmarks found.");
-        const backBanner = document.createElement('div');
-        backBanner.className = 'info-banner saved-header';
-        backBanner.innerHTML = `
-            <div class="banner-left">
-                <button onclick="refreshNews()" class="icon-btn-text">← Back to Home</button>
-            </div>
-            <div class="banner-title">Bookmarks</div>
-        `;
+        const backBanner = createActionBanner(bookmarkTitle, false);
         newsContainer.prepend(backBanner);
         return;
     }
 
     renderNews(articles, false, true, true); // skipMenuUpdate=true
 
-    const backBanner = document.createElement('div');
-    backBanner.className = 'info-banner saved-header';
-    backBanner.innerHTML = `
-            <div class="banner-left">
-                <button onclick="refreshNews()" class="icon-btn-text">← Back to Home</button>
-            </div>
-            <div class="banner-title">Bookmarks <svg viewBox="0 0 24 24" fill="currentColor" style="width:1.2rem; height:1.2rem; display:inline-block; vertical-align:middle; margin-left:5px; color:#facc15;"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.46 21z"/></svg></div>
-            <div class="banner-right">
-                <button onclick="clearAllBookmarks()" class="icon-btn-text delete-all" title="Clear All">🗑️ Clear All</button>
-            </div>
-        `;
+    const backBanner = createActionBanner(bookmarkTitle, true, 'clearAllBookmarks()');
     newsContainer.prepend(backBanner);
 }
 
@@ -1363,10 +1346,6 @@ function setupSettingsHandlers() {
 
     if (settingsBtn) {
         settingsBtn.onclick = () => {
-            // Set source checkboxes
-            sourceCheckboxes.forEach(checkbox => {
-                checkbox.checked = preferredSources.includes(checkbox.value);
-            });
             // Set interest checkboxes
             interestCheckboxes.forEach(checkbox => {
                 checkbox.checked = preferredInterests.includes(checkbox.value);
@@ -1383,15 +1362,6 @@ function setupSettingsHandlers() {
 
     if (saveSettings) {
         saveSettings.onclick = () => {
-            const selectedSources = Array.from(sourceCheckboxes)
-                .filter(c => c.checked)
-                .map(c => c.value);
-
-            if (selectedSources.length > 0) {
-                preferredSources = selectedSources;
-                localStorage.setItem('preferredSources', JSON.stringify(preferredSources));
-            }
-
             const selectedInterests = Array.from(interestCheckboxes)
                 .filter(c => c.checked)
                 .map(c => c.value);
